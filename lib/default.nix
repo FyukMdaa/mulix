@@ -786,12 +786,30 @@ in rec {
       else throw "mulix: configurations needs `pkgsFor` or `inputs.nixpkgs` to build packages for system '${system}'";
 
     # 各 host について mkMulix を呼ぶ
+    # host の system から pkgs を引いて渡す。これにより module トップレベルで
+    # `pkgs` を要求する module が collection 時に正しい pkgs を参照できる。
     rawPerHost = builtins.listToAttrs (map (hostName:
-      {
+      let
+        # fleet discovery で取得した host 名から system を引くため、
+        # 一度 mkMulix を host 指定で呼んで host.system を取り出す必要があるが、
+        # それだと2回評価することになる。代わりに paths/hostDefs から
+        # host fragment を評価して system を取り出す。
+        # 簡易的に、mkMulix を pkgs=null で1回呼んで host.system を取得し、
+        # その system から pkgs を引いて再度 mkMulix を呼ぶ。
+        # ただし Nix の laziness により、host.system に依存しない部分は
+        # 1回しか評価されないので、実質的なオーバーヘッドは少ない。
+        r0 = mkMulix {
+          inherit paths hostDefs modules overlays conditionNames configNames force specialArgs;
+          host = hostName;
+        };
+        system = r0.host.system or null;
+        hostPkgs = if system != null then pkgsOf system else null;
+      in {
         name = hostName;
         value = mkMulix {
           inherit paths hostDefs modules overlays conditionNames configNames force specialArgs;
           host = hostName;
+          pkgs = hostPkgs;
         };
       }
     ) fleetHostNames);
