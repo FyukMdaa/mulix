@@ -103,6 +103,10 @@ in rec {
     configNames ? {},
     force ? {},
     specialArgs ? {},
+    # pkgs: module トップレベル関数が `pkgs` を要求する場合に渡す。
+    # `configurations` は host の system から自動的に引いて渡す。
+    # 手動で mkMulix を呼ぶ場合は明示的に渡す必要がある (省略時は null)。
+    pkgs ? null,
   }: let
     _hostDefsInputCheck =
       if !builtins.isAttrs hostDefs
