@@ -274,6 +274,8 @@ in rec {
     # ---- Pass 2: re-call module/host files with overlay-applied pkgs -------
     # Only module and host entries need re-calling; overlay descriptors from
     # Pass 1 are already correct (they don't reference `pkgs`).
+    # Iterate over `calledPathEntriesPass1` (not `pathEntries`) so we can
+    # both check `kindOfPass1 e` (needs `e.called`) and re-call `e.def`.
     calledPathEntriesPass2 =
       map
       (e:
@@ -288,7 +290,7 @@ in rec {
               (callArgsBasePass2 // configGraphThunk)
               e.def;
           })
-      pathEntries;
+      calledPathEntriesPass1;
     kindOf = e:
       if builtins.isAttrs e.called
       then e.called._mulixKind or null
