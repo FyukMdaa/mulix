@@ -1,0 +1,15 @@
+#+TITLE: mulix
+#+AUTHOR: FyukMdaa
+
+* mulixとは
+
+mulixは、NixOS、Home Manager、およびNix-Darwinの設定を記述するためのNixフレームワークです。
+
+mulixは、denixのmoduleおよびhostを中心とした構成整理の考え方に影響を受けています。ただし、mulixは単に設定ファイルを整理するだけではなく、module間のデータの流れを明示し、その依存関係を検証および可視化することを重視します。
+
+* TODO
+- [] templatesを書く :: 今は仕様が固まっていないため書いていません。
+- [] docsを書く :: denixとの比較やmulixの思想、mulibのオプションや設定例を書く
+
+* special thanks
+- [[https://github.com/yunfachi/denix][denix]] :: 構想、設計に大きな影響を受けました。
