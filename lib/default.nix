@@ -593,7 +593,11 @@ in rec {
     targetArgsFor = target:
       builtins.removeAttrs
         callArgsBase
-        ["config" "options" "myconfig"];
+        # `config` / `options` / `myconfig` は target time に module system
+        # (あるいは mulix の _module.args 注入) から供給される。
+        # `modulesPath` / `osConfig` / `_module` は NixOS module system が
+        # 供給するため、stub を remove して module system 由来の値が使われるようにする。
+        ["config" "options" "myconfig" "modulesPath" "osConfig" "_module"];
 
     # Argument names mulix itself injects into host `os` / `home` / `darwin` /
     # `shared` function fragments.  Everything else they request (`pkgs`, `lib`,
