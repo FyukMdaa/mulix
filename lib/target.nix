@@ -57,11 +57,11 @@
     else mod;
 
   optionsFragment = {mod, specialArgsBase, configGraphForConfig}:
-    {config, lib, ...} @ nixArgs: let
+    args @ {config, lib, ...}: let
       graph = configGraphForConfig config;
       evalArgs =
         specialArgsBase
-        // nixArgs
+        // args
         // graph
         // {
           opt = optOf mod.name config;
@@ -83,10 +83,16 @@
       };
 
   mkAlwaysEntry = {mod, target, specialArgsBase, configGraphForConfig}:
-    {config, lib, ...} @ nixArgs: let
+    args @ {config, lib, ...}: let
+      # `args` は NixOS module system が供給する全引数 (config, lib, pkgs,
+      # modulesPath, options, _module, specialArgs 経由の _module.args, ...)
+      # を含む。`specialArgsBase` には mulix が供給する引数 (host, mulib,
+      # myconfig, configNames, ...) が入る。
+      # `args` を後で `//` することで、NixOS module system 由来の modulesPath 等
+      # が specialArgsBase の stub を上書きする。
       common =
         specialArgsBase
-        // nixArgs
+        // args
         // configGraphForConfig config
         // {myconfig = config.mulix.modules;};
       evaluated = evalDefinition mod common;
@@ -98,10 +104,10 @@
       else frag;
 
   mkConditionalEntry = {mod, target, specialArgsBase, configGraphForConfig}:
-    {config, lib, ...} @ nixArgs: let
+    args @ {config, lib, ...}: let
       common =
         specialArgsBase
-        // nixArgs
+        // args
         // configGraphForConfig config
         // {myconfig = config.mulix.modules;};
       evaluated = evalDefinition mod common;
