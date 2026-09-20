@@ -204,7 +204,20 @@ in rec {
           source = toString e.path;
         })
       (collectorLib.collectPaths paths);
-    calledPathEntries =
+
+    # ---- Pass 1: call all files with base pkgs to classify & get overlays --
+    # module/host file functions are evaluated ONCE here.  The `pkgs` they
+    # receive at this point does NOT have overlays applied (overlays are
+    # resolved below, after classification).  This is fine for classification
+    # (we only need `_mulixKind`) and for overlay extraction (overlay files
+    # don't reference `pkgs` at the top level — their overlay function is
+    # `final: prev: ...`, called later by nixpkgs).
+    #
+    # After overlays are resolved, we re-call module/host files with
+    # overlay-applied `pkgs` (Pass 2 below).  This is what makes
+    # `pkgs.stable` (overlay-derived) work inside attrset fragments —
+    # the closure captures the overlay-applied `pkgs`.
+    calledPathEntriesPass1 =
       map
       (e:
         e
@@ -216,15 +229,15 @@ in rec {
             e.def;
         })
       pathEntries;
-    kindOf = e:
+    kindOfPass1 = e:
       if builtins.isAttrs e.called
       then e.called._mulixKind or null
       else null;
-    entriesOfKind = kind: builtins.filter (e: kindOf e == kind) calledPathEntries;
+    entriesOfKindPass1 = kind: builtins.filter (e: kindOfPass1 e == kind) calledPathEntriesPass1;
     unrecognizedPathEntries =
       builtins.filter
-      (e: !(builtins.elem (kindOf e) ["module" "host" "overlay"]))
-      calledPathEntries;
+      (e: !(builtins.elem (kindOfPass1 e) ["module" "host" "overlay"]))
+      calledPathEntriesPass1;
     _pathsKindCheck =
       if unrecognizedPathEntries != []
       then
@@ -236,6 +249,51 @@ in rec {
           help: keep helper files outside the directories passed to `paths`.
         ''
       else true;
+
+    # ---- overlays (resolved from Pass 1 descriptors) -----------------------
+    overlayEntries =
+      map (e: {def = e.called; label = e.label;}) (entriesOfKindPass1 "overlay")
+      ++ lib.imap0 (i: d: {def = d; label = "overlays[${toString i}]";}) overlays;
+    resolvedOverlays = overlaysLib.resolve {
+      entries = overlayEntries;
+      conditionValue = targetLib.conditionValue;
+    };
+    _overlayCheck = builtins.seq (builtins.length resolvedOverlays.overlays) true;
+
+    # ---- build overlay-applied pkgs ----------------------------------------
+    # This is the key fix: re-evaluate module/host files with `pkgs` that has
+    # overlays applied, so `pkgs.stable` (overlay-derived) works inside
+    # attrset fragments without requiring the user to make every fragment
+    # a function.
+    hostPkgs =
+      if pkgs != null && resolvedOverlays.overlays != []
+      then pkgs.extend (lib.composeManyExtensions resolvedOverlays.overlays)
+      else pkgs;
+    callArgsBasePass2 = callArgsBase // { pkgs = hostPkgs; };
+
+    # ---- Pass 2: re-call module/host files with overlay-applied pkgs -------
+    # Only module and host entries need re-calling; overlay descriptors from
+    # Pass 1 are already correct (they don't reference `pkgs`).
+    calledPathEntriesPass2 =
+      map
+      (e:
+        if kindOfPass1 e == "overlay"
+        then e   # reuse Pass 1 result for overlays
+        else
+          e
+          // {
+            called =
+              normalizeLib.callModule
+              "at ${e.label}"
+              (callArgsBasePass2 // configGraphThunk)
+              e.def;
+          })
+      pathEntries;
+    kindOf = e:
+      if builtins.isAttrs e.called
+      then e.called._mulixKind or null
+      else null;
+    entriesOfKind = kind: builtins.filter (e: kindOf e == kind) calledPathEntriesPass2;
 
     # ---- hosts: fragments -> one merged host per name -----------------------
     hostFragments =
@@ -269,16 +327,6 @@ in rec {
         mulix: internal error: host view must be an attrset,
         got: ${builtins.typeOf hostViewRaw}
       '';
-
-    # ---- overlays ------------------------------------------------------------
-    overlayEntries =
-      map (e: {def = e.called; label = e.label;}) (entriesOfKind "overlay")
-      ++ lib.imap0 (i: d: {def = d; label = "overlays[${toString i}]";}) overlays;
-    resolvedOverlays = overlaysLib.resolve {
-      entries = overlayEntries;
-      conditionValue = targetLib.conditionValue;
-    };
-    _overlayCheck = builtins.seq (builtins.length resolvedOverlays.overlays) true;
 
     # ---- modules: legacy `modules` + module descriptors found in `paths` -----
     legacyCollected =
