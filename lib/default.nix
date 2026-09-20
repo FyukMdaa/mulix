@@ -205,18 +205,11 @@ in rec {
         })
       (collectorLib.collectPaths paths);
 
-    # ---- Pass 1: call all files with base pkgs to classify & get overlays --
-    # module/host file functions are evaluated ONCE here.  The `pkgs` they
-    # receive at this point does NOT have overlays applied (overlays are
-    # resolved below, after classification).  This is fine for classification
-    # (we only need `_mulixKind`) and for overlay extraction (overlay files
-    # don't reference `pkgs` at the top level — their overlay function is
-    # `final: prev: ...`, called later by nixpkgs).
-    #
-    # After overlays are resolved, we re-call module/host files with
-    # overlay-applied `pkgs` (Pass 2 below).  This is what makes
-    # `pkgs.stable` (overlay-derived) work inside attrset fragments —
-    # the closure captures the overlay-applied `pkgs`.
+    # ---- Pass 1: classify files & extract overlays -------------------------
+    # Call all files with base (overlay-less) pkgs to classify them and
+    # extract overlay descriptors.  Module/host descriptors from this pass
+    # are NOT used downstream — they will be re-called in Pass 2 with
+    # overlay-applied pkgs.
     calledPathEntriesPass1 =
       map
       (e:
@@ -260,11 +253,11 @@ in rec {
     };
     _overlayCheck = builtins.seq (builtins.length resolvedOverlays.overlays) true;
 
-    # ---- build overlay-applied pkgs ----------------------------------------
-    # This is the key fix: re-evaluate module/host files with `pkgs` that has
-    # overlays applied, so `pkgs.stable` (overlay-derived) works inside
-    # attrset fragments without requiring the user to make every fragment
-    # a function.
+    # ---- build overlay-applied pkgs (Pass 2 pkgs) --------------------------
+    # Re-evaluate module/host files with pkgs that has overlays applied,
+    # so `pkgs.stable` (overlay-derived) works inside attrset fragments.
+    # `pkgs.extend` applies overlays on top of the base pkgs, giving the
+    # same result as NixOS module system's `nixpkgs.overlays`.
     hostPkgs =
       if pkgs != null && resolvedOverlays.overlays != []
       then pkgs.extend (lib.composeManyExtensions resolvedOverlays.overlays)
@@ -272,15 +265,15 @@ in rec {
     callArgsBasePass2 = callArgsBase // { pkgs = hostPkgs; };
 
     # ---- Pass 2: re-call module/host files with overlay-applied pkgs -------
-    # Only module and host entries need re-calling; overlay descriptors from
-    # Pass 1 are already correct (they don't reference `pkgs`).
-    # Iterate over `calledPathEntriesPass1` (not `pathEntries`) so we can
-    # both check `kindOfPass1 e` (needs `e.called`) and re-call `e.def`.
-    calledPathEntriesPass2 =
+    # Module and host descriptors from Pass 1 used overlay-less pkgs, so
+    # any `pkgs.stable` in attrset fragments would be broken.  Re-call
+    # them with overlay-applied pkgs to fix this.  Overlay descriptors
+    # from Pass 1 are reused (they don't reference pkgs at top level).
+    calledPathEntries =
       map
       (e:
         if kindOfPass1 e == "overlay"
-        then e   # reuse Pass 1 result for overlays
+        then e
         else
           e
           // {
@@ -295,7 +288,7 @@ in rec {
       if builtins.isAttrs e.called
       then e.called._mulixKind or null
       else null;
-    entriesOfKind = kind: builtins.filter (e: kindOf e == kind) calledPathEntriesPass2;
+    entriesOfKind = kind: builtins.filter (e: kindOf e == kind) calledPathEntries;
 
     # ---- hosts: fragments -> one merged host per name -----------------------
     hostFragments =
