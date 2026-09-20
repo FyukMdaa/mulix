@@ -713,11 +713,22 @@ in rec {
     # host fragment は通常 `mulib` しか読まない (host を定義する側なので)。
     # ここでは `host` / `config` / `myconfig` を throw にした callArgs で呼び出し、
     # `_mulixKind == "host"` なものだけを拾う。
+    #
+    # NixOS module system が提供する引数 (modulesPath, osConfig, ...) も
+    # stub として渡す。host fragment のトップレベルではこれらを使わない
+    # (os/home/darwin フラグメントの中で使う) ので、null で十分。
     fleetHostNames =
       let
         pathEntries = collectorLib.collectPaths paths;
+        # NixOS module system が提供する引数の stub。host fragment の関数が
+        # これらを要求しても throw しないようにする。実際の値は target time
+        # に module system から注入される。
+        nixosStubArgs = lib.genAttrs [
+          "modulesPath" "osConfig" "_module"
+        ] (_: null);
         discoveryArgs =
           specialArgs
+          // nixosStubArgs
           // {
             mulib = mulibApi;
             host = throw "mulix: 'host' is not available during fleet discovery";
