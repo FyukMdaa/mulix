@@ -321,15 +321,20 @@ in rec {
     '';
 
     mulibForHost = mulibApi;
-    # NixOS module system が提供する引数の stub。これらは collection 時には
-    # 使われず (os/home/darwin フラグメント内で使われる)、target time に
-    # module system から実際の値が注入される。stub として null を渡すことで
-    # callModule の "missing argument" チェックを通す。
-    # Nix の laziness により、フラグメント値内の modulesPath + "/..." 等は
-    # collection 時には評価されない。
-    nixosStubArgs = lib.genAttrs [
-      "modulesPath" "osConfig" "_module"
-    ] (_: null);
+    # NixOS module system が提供する引数の stub。
+    # `modulesPath` は host fragment の `os`/`home`/`darwin`/`shared` 内で
+    # よく使われる (imports = [ (modulesPath + "/...") ])。collection 時に
+    # null を渡すと、thunk に null が焼き込まれ target time に復旧できない。
+    # そこで inputs.nixpkgs から real path を構築して渡す。
+    # `osConfig` / `_module` は collection 時には使われないので null でよい。
+    nixosStubArgs = {
+      modulesPath =
+        if inputs ? nixpkgs
+        then builtins.toString (inputs.nixpkgs + "/nixos/modules")
+        else null;
+      osConfig = null;
+      _module = null;
+    };
     callArgsBase =
       specialArgs
       // nixosStubArgs
