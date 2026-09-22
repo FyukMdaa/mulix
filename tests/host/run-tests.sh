@@ -445,6 +445,33 @@ expect_success "14d. force can override a bound configName" "$PRE"'
   in (evalT r "home").user == "bob"
 '
 
+expect_success "14e. host send.force can enable a bound module and override its opt" "$PRE"'
+  let r = mkM {
+    host = "alpha"; conditionNames = cn;
+    configNames.myconfig = { bind = "mulix.modules"; };
+    hostDefs.alpha = H {
+      send.force.myconfig = {
+        feature = {
+          enable = true;
+          mode = "forced";
+        };
+      };
+    };
+    modules = [
+      (m.module {
+        name = "feature";
+        options = {
+          enable = m.mulibApi.bool.false;
+          mode = m.mulibApi.str "base";
+        };
+        always.os = { opt, ... }: { out.alwaysMode = opt.mode; };
+        os.out.enabled = "yes";
+      })
+    ];
+  };
+  in (evalT r "os") == { alwaysMode = "forced"; enabled = "yes"; }
+'
+
 expect_success "15. bound configNames use the ordinary dependency graph" "$PRE"'
   let r = mkM {
     host = "h"; conditionNames = cn;
