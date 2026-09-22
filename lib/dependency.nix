@@ -6,7 +6,7 @@
 
   sendersOf = modules: configName:
     map (m: m.name)
-    (builtins.filter (m: ((m.send or {}) ? ${configName} || (m.always.send or {}) ? ${configName})) modules);
+    (builtins.filter (m: (builtins.hasAttr configName (m.send or {}) || builtins.hasAttr configName (m.always.send or {}))) modules);
 
   # receiver は「configName を function 引数として要求している module」。
   # options / target fragment の function args も receiver declaration として
@@ -28,9 +28,6 @@
   buildGraph = {
     modules,
     configNames,
-    # Edges that do not come from configNames (module-state reads through
-    # `myconfig`).  They live in the same graph so ONE cycle check covers both.
-    extraEdges ? [],
   }: let
     edges =
       lib.concatMap
@@ -47,7 +44,7 @@
           receivers)
         senders)
       configNames;
-  in {edges = edges ++ extraEdges;};
+  in {inherit edges;};
 
   /*
   detectCycles: graph.edges (module 名の有向グラフ) に対して
@@ -147,7 +144,7 @@
   isAcyclic = edges: let
     round = es: let
       hasIncoming = builtins.listToAttrs (map (e: {name = e.to; value = true;}) es);
-      remaining = builtins.filter (e: hasIncoming ? ${e.from}) es;
+      remaining = builtins.filter (e: builtins.hasAttr e.from hasIncoming) es;
     in
       if remaining == []
       then true
@@ -189,21 +186,11 @@
       help: receive the configName in a different module (module names must be unique),
       help: or remove the receiving argument from this module.
     '';
-    # Every hop goes through module state (myconfig), no configName involved.
-    onlyModuleState = builtins.all (v: v == "module-state") vias;
-    headline =
-      if onlyModuleState
-      then "mulix: module-state dependency cycle detected"
-      else "mulix: dependency cycle detected";
-    stateDetail = ''
-      These modules read each other's state through `myconfig`.
-      help: break the loop, or list only the modules that are really read with an
-      help: explicit `reads = [ ... ];` (it replaces source-text inference).
-    '';
+    headline = "mulix: dependency cycle detected";
   in ''
     ${headline}
     ${hops}
-    ${if isSelfDependency then selfDetail else ""}${if onlyModuleState then stateDetail else ""}(declared dependency graph cycle detection)
+    ${if isSelfDependency then selfDetail else ""}(declared dependency graph cycle detection)
   '';
 
   # 便利関数: buildGraph + detectCycles をまとめて実行し、
@@ -211,9 +198,8 @@
   checkNoCycles = {
     modules,
     configNames,
-    extraEdges ? [],
   }: let
-    graph = buildGraph {inherit modules configNames extraEdges;};
+    graph = buildGraph {inherit modules configNames;};
     result = detectCycles graph;
   in
     if result.found

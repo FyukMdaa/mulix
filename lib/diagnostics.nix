@@ -2,7 +2,6 @@
   inherit (builtins) isAttrs isList elem;
   errorsLib = import ./errors.nix {inherit lib;};
   hostsLib = import ./hosts.nix {inherit lib;};
-  moduleStateLib = import ./module-state.nix {inherit lib;};
 
   # The canonical reserved namespace is owned by default.nix and injected here.
   # Do not duplicate the list: registry validation and diagnostics must use the
@@ -19,7 +18,7 @@
       f
       != null
       && lib.isFunction f
-      && elem "opt" (builtins.attrNames (builtins.functionArgs f));
+      && elem "opt" (builtins.attrNames (lib.functionArgs f));
   in
     builtins.any checkFrag
     (
@@ -85,20 +84,6 @@ in rec {
         (name: builtins.length hosts.${name}.sources.fragments > 1)
         (builtins.attrNames hosts));
 
-    # ---- myconfig (module state) ----
-    # Reads are inferred from module source text, so an unknown name is
-    # reported, not thrown: it may be a local variable that shadows `myconfig`.
-    unknownModuleStateReads =
-      map
-      (r:
-        mkReport "error" "myconfig-unknown-module" r.module r.source ''
-          module '${r.module}' reads myconfig.${r.read}, but there is no module named '${r.read}'.
-          ${errorsLib.didYouMean r.read (map (m: m.name) modules)}
-          (Inferred from the module's source text; an explicit `reads = [ ... ];`
-           replaces inference.)
-        '')
-      (moduleStateLib.unknownInferredReads modules);
-
     # ---- 1. opaque dependency ----
     opaqueDeps =
       map
@@ -155,13 +140,13 @@ in rec {
       (builtins.filter
         (
           configName:
-            !(registry ? ${configName})
+            !(builtins.hasAttr configName registry)
             || !(registry.${configName} ? default)
         )
         (builtins.filter
           (configName:
-            (receiversByConfigName ? ${configName})
-            && !(sendersByConfigName ? ${configName}))
+            (builtins.hasAttr configName receiversByConfigName)
+            && !(builtins.hasAttr configName sendersByConfigName))
           registryNames));
 
     # ---- 4. unused configName (info) ----
@@ -175,9 +160,9 @@ in rec {
         '')
       (builtins.filter
         (configName:
-          !(potentialSenders ? ${configName})
-          && !(receiversByConfigName ? ${configName})
-          && !(force ? ${configName}))
+          !(builtins.hasAttr configName potentialSenders)
+          && !(builtins.hasAttr configName receiversByConfigName)
+          && !(builtins.hasAttr configName force))
         registryNames);
 
     # ---- 5. reserved arg collision ----
@@ -250,8 +235,7 @@ in rec {
       ++ unknownReceiverArgs
       ++ unknownForces
       ++ hostDirectoryMismatch
-      ++ hostComposition
-      ++ unknownModuleStateReads;
+      ++ hostComposition;
 
     errors = builtins.filter (r: r.severity == "error") allReports;
     warnings = builtins.filter (r: r.severity == "warning") allReports;

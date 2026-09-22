@@ -29,10 +29,6 @@
     # specialArgs or _module.args.  They are not configName namespaces.
     "modulesPath"
     "osConfig"
-    # `myconfig` is `config.mulix.modules` (module state), NOT a configName.
-    # "module-state" labels module-state edges in the dependency graph.
-    "myconfig"
-    "module-state"
   ];
   hostsLib = import ./hosts.nix {inherit lib;};
   collectorLib = import ./collector.nix {inherit lib;};
@@ -40,7 +36,6 @@
   configGraphLib = import ./config-graph.nix {inherit lib;};
   dependencyLib = import ./dependency.nix {inherit lib;};
   targetLib = import ./target.nix {inherit lib;};
-  moduleStateLib = import ./module-state.nix {inherit lib;};
   overlaysLib = import ./overlays.nix {inherit lib;};
   diagnosticsLib = import ./diagnostics.nix {inherit lib; reservedArgs = mulixReservedArgs;};
   errorsLib = import ./errors.nix {inherit lib;};
@@ -55,7 +50,6 @@ in rec {
     dependencyLib
     targetLib
     optionShorthands
-    moduleStateLib
     overlaysLib
     ;
   inherit diagnosticsLib graphLib;
@@ -84,7 +78,7 @@ in rec {
     type = optionShorthands.type;
     inherit (lib) mkOption mkEnableOption mkIf mkMerge mkDefault mkForce
       mkOverride mkOrder mkBefore mkAfter;
-    inherit (optionShorthands) bool str int enum select attrs path package listOf nullOr;
+    inherit (optionShorthands) bool str int float lines enum oneOf attrs attrsOf path package listOf nullOr either select;
   };
   runDiagnostics = diagnosticsLib.run;
   mkMulix = {
@@ -93,10 +87,8 @@ in rec {
     hostDefs ? {},
     host,
     conditionNames ? {},
-    # Legacy explicit modules: a list, or one flat directory.
-    modules ? [],
-    # Directories (or single files) discovered recursively.  Every .nix file
-    # must return a mulib.module, mulib.host or mulib.overlay descriptor.
+    # Directories (or single files) discovered recursively. Only files that
+    # return a mulib.module, mulib.host or mulib.overlay descriptor participate.
     paths ? [],
     # Extra mulib.overlay descriptors (in addition to those found in `paths`).
     overlays ? [],
@@ -106,6 +98,14 @@ in rec {
     # pkgs: module トップレベル関数が `pkgs` を要求する場合に渡す。
     # `configurations` は host の system から自動的に引いて渡す。
     # 手動で mkMulix を呼ぶ場合は明示的に渡す必要がある (省略時は null)。
+    #
+    # 使われる場面:
+    #   * collection 時 (name / 静的な send 値 / 診断など): overlay 適用済みの
+    #     `pkgs.extend` 版 (Pass 2) が使われる。
+    #   * target 評価時: これは *fallback* でしかない。module system が構築した
+    #     `config._module.args.pkgs` (nixpkgs.overlays / nixpkgs.config /
+    #     hostPlatform 適用済み) があればそちらが fragment に渡される。
+    #     (target.nix: moduleSystemPkgs)
     pkgs ? null,
   }: let
     _hostDefsInputCheck =
@@ -140,14 +140,6 @@ in rec {
         (input validation)
       ''
       else true;
-    _modulesInputCheck =
-      if !(builtins.isList modules) && !(builtins.isPath modules)
-      then throw ''
-        mulix: invalid modules input
-        expected a list of module definitions or a directory path, got: ${builtins.typeOf modules}
-        (input validation)
-      ''
-      else true;
     _configNamesInputCheck =
       if !(builtins.isAttrs configNames)
       then throw ''
@@ -177,10 +169,9 @@ in rec {
       (builtins.seq _pathsInputCheck
       (builtins.seq _overlaysInputCheck
       (builtins.seq _hostInputCheck
-        (builtins.seq _modulesInputCheck
-          (builtins.seq _configNamesInputCheck
+        (builtins.seq _configNamesInputCheck
             (builtins.seq _forceInputCheck
-              _specialArgsInputCheck))))));
+              _specialArgsInputCheck)))));
     registryNames = builtins.attrNames configNames;
     reservedArgNames = lib.unique (mulixReservedArgs ++ builtins.attrNames specialArgs);
     validatedRegistry = configGraphLib.validateRegistryWithReserved configNames {reservedNames = reservedArgNames;};
@@ -191,10 +182,9 @@ in rec {
     selectedHostName = host;
 
     # ---- discovery: `paths` -----------------------------------------------
-    # Every .nix file below `paths` is imported, called once (with the same
-    # arguments modules get) and classified by the descriptor it returns.
-    # Calling a file does not force `host`, so host files and module files can
-    # live in the same tree without a cycle (a host file must not READ `host`).
+    # Every .nix file below `paths` is imported and called for descriptor
+    # classification. Only mulib.module / mulib.host / mulib.overlay results
+    # participate; other results are ignored.
     pathEntries =
       map
       (e:
@@ -206,20 +196,41 @@ in rec {
       (collectorLib.collectPaths paths);
 
     # ---- Pass 1: classify files & extract overlays -------------------------
-    # Call all files with base (overlay-less) pkgs to classify them and
-    # extract overlay descriptors.  Module/host descriptors from this pass
-    # are NOT used downstream — they will be re-called in Pass 2 with
-    # overlay-applied pkgs.
+    # Check top-level function receiver names before calling the function.  A
+    # missing unknown receiver must be reported as a configName error rather
+    # than as a generic Nix missing-argument error from callModule.  Target
+    # fragments/options/send functions are checked later by normalizeModule.
+    checkTopLevelReceiverArgs = context: def:
+      let
+        unknown = builtins.filter
+          (arg:
+            !(builtins.elem arg reservedArgNames)
+            && !(builtins.elem arg registryNames))
+          (normalizeLib.functionArgsOf def);
+      in
+        if unknown == []
+        then true
+        else
+          throw ''
+            mulix: unknown configName in receiver arguments
+            module function(s) in '${context}' request argument name(s) that are
+            neither mulix built-ins nor declared configNames:
+              ${lib.concatStringsSep "\n  " (map (arg: "- '${arg}'") unknown)}
+            (The “receiver” argument must be pre-registered in the registry.)
+            help: declare the configName in configNames before use.
+          '';
     calledPathEntriesPass1 =
       map
       (e:
         e
         // {
           called =
-            normalizeLib.callModule
-            "at ${e.label}"
-            (callArgsBase // configGraphThunk)
-            e.def;
+            builtins.seq
+            (checkTopLevelReceiverArgs e.label e.def)
+            (normalizeLib.callModule
+              "at ${e.label}"
+              (callArgsBase // configGraphThunk)
+              e.def);
         })
       pathEntries;
     kindOfPass1 = e:
@@ -227,21 +238,10 @@ in rec {
       then e.called._mulixKind or null
       else null;
     entriesOfKindPass1 = kind: builtins.filter (e: kindOfPass1 e == kind) calledPathEntriesPass1;
-    unrecognizedPathEntries =
-      builtins.filter
-      (e: !(builtins.elem (kindOfPass1 e) ["module" "host" "overlay"]))
-      calledPathEntriesPass1;
-    _pathsKindCheck =
-      if unrecognizedPathEntries != []
-      then
-        throw ''
-          mulix: unrecognized file in paths
-          ${lib.concatStringsSep "\n" (map (e: "- ${e.label} (returned: ${builtins.typeOf e.called})") unrecognizedPathEntries)}
-          Every .nix file below `paths` must return a mulib.module, mulib.host or
-          mulib.overlay descriptor.
-          help: keep helper files outside the directories passed to `paths`.
-        ''
-      else true;
+    # Non-descriptor files are intentionally ignored. This keeps `paths`
+    # flexible enough to contain helper .nix files without making them part of
+    # mulix's public collection contract.
+    _pathsKindCheck = true;
 
     # ---- overlays (resolved from Pass 1 descriptors) -----------------------
     overlayEntries =
@@ -301,12 +301,20 @@ in rec {
         })
       (entriesOfKind "host");
     composedHosts = hostsLib.composeFragments hostFragments;
+    _selectedHostCheck =
+      if builtins.hasAttr selectedHostName composedHosts
+      then true
+      else
+        throw ''
+          mulix: unknown host '${selectedHostName}'
+          known hosts: ${builtins.concatStringsSep ", " (builtins.attrNames composedHosts)}
+        '';
     hostView = hostsLib.mkComposedView {
       composed = composedHosts;
       inherit conditionNames;
       hostName = selectedHostName;
     };
-    hostDef = composedHosts.${selectedHostName};
+    hostDef = builtins.seq _selectedHostCheck composedHosts.${selectedHostName};
     hostAttrs = {
       inherit (hostDef) name system features roles sources;
       is = hostView.is;
@@ -323,15 +331,11 @@ in rec {
         got: ${builtins.typeOf hostViewRaw}
       '';
 
-    # ---- modules: legacy `modules` + module descriptors found in `paths` -----
-    legacyCollected =
-      if builtins.isPath modules
-      then collectorLib.collectFromDir modules
-      else collectorLib.collectFromList modules;
+    # ---- modules: descriptors discovered from `paths` -----------------------
     collected =
       lib.imap0
       (index: e: e // {inherit index;})
-      (legacyCollected ++ entriesOfKind "module");
+      (entriesOfKind "module");
     topLevelConfigPlaceholder = throw ''
       mulix: 'config' is not available at module top-level
       The Nix module system 'config' (escape hatch) is provided
@@ -350,15 +354,6 @@ in rec {
       If you need the merged config inside a fragment, make the
       fragment a function. If you need a value from another module,
       use send / configName instead.
-    '';
-    topLevelMyconfigPlaceholder = throw ''
-      mulix: 'myconfig' is not available at module top-level
-      `myconfig` is `config.mulix.modules`: it exists only inside the Nix
-      module fixpoint.  Use it inside target fragments written as functions:
-
-        home = { myconfig, ... }: { ... myconfig.constants.username ... };
-
-      or inside `options` / `send` functions.
     '';
     topLevelOptionsPlaceholder = throw ''
       mulix: 'options' is not available at module top-level
@@ -383,15 +378,15 @@ in rec {
       _module = null;
     };
     callArgsBase =
-      specialArgs
-      // nixosStubArgs
+      nixosStubArgs
+      // specialArgs
       // {
         mulib = mulibForHost;
         host = hostAttrs;
-        inherit pkgs lib inputs;
+        pkgs = specialArgs.pkgs or pkgs;
+        inherit lib inputs;
         config = topLevelConfigPlaceholder;
         options = topLevelOptionsPlaceholder;
-        myconfig = topLevelMyconfigPlaceholder;
         inherit (mulibApi) types mkOption mkEnableOption mkIf mkMerge mkDefault mkForce
           mkOverride mkOrder mkBefore mkAfter;
       };
@@ -417,7 +412,6 @@ in rec {
         // {
           index = c.index;
           source = c.source or null;
-          sourcePath = c.path or null;
           definition = c.def;
         })
       checkedRaw;
@@ -450,14 +444,9 @@ in rec {
            mulix reserved args: ${builtins.concatStringsSep ", " reservedArgNames})
         ''
       else true;
-    # Module-state reads (myconfig) become edges of the SAME graph, so one
-    # cycle check covers configName and module-state dependencies together.
-    moduleStateEdgeList = moduleStateLib.moduleStateEdges normalizedModules;
-    _readsCheck = moduleStateLib.checkExplicitReads normalizedModules;
     dependencyGraph = dependencyLib.checkNoCycles {
       modules = normalizedModules;
       configNames = registryNames;
-      extraEdges = moduleStateEdgeList;
     };
     sendDeclarations =
       builtins.concatMap
@@ -500,11 +489,13 @@ in rec {
         callArgsBase
         // {
           opt = config.mulix.modules.${contribution.module};
-          myconfig = config.mulix.modules;
+          # Same rule as target fragments: the module system's `pkgs` (with
+          # overlays applied) wins over mkMulix's own `pkgs` argument.
+          pkgs = config._module.args.pkgs or (callArgsBase.pkgs or null);
         }
         // graph;
     in
-      if builtins.isFunction contribution.value
+      if lib.isFunction contribution.value
       then contribution.value baseArgs
       else contribution.value;
 
@@ -555,7 +546,13 @@ in rec {
 
     configGraphForConfig = config: let
       graph = configGraphLib.resolveAll {
-        registry = validatedRegistry;
+        # Re-validate the user registry here rather than the normalized registry:
+        # bind = "mulix.modules" owns its injected type/default, so feeding the
+        # normalized form back into the public validator would look like a user
+        # supplied type/default. The eager `_registryCheck` above has already
+        # validated the same original input.
+        registry = configNames;
+        baseValues = lib.genAttrs boundConfigNames (_: config.mulix.modules);
         contributionsFor = configName:
           applySendProperties {
             inherit config graph;
@@ -570,14 +567,14 @@ in rec {
     sendContributionsFor = configName:
       lib.concatMap
       (mod:
-        (lib.optional (mod.send ? ${configName}) {
+        (lib.optional (builtins.hasAttr configName mod.send) {
           inherit configName;
           module = mod.name;
           index = mod.index;
           value = mod.send.${configName};
           source = mod.source or null;
         })
-        ++ (lib.optional (mod.always.send ? ${configName}) {
+        ++ (lib.optional (builtins.hasAttr configName mod.always.send) {
           inherit configName;
           module = mod.name;
           index = mod.index;
@@ -598,10 +595,11 @@ in rec {
     # values".  Function-valued sends (which need `opt`) are not available in
     # this view at all; they are evaluated at target time.
     #
-    # Collection-time configName arguments (module functions) are served from
-    # this same static view.
+    # Collection-time arguments for ordinary configNames use the static graph.
+    # A configName bound to `config.mulix.modules` deliberately throws when forced
+    # this early because its base value exists only at target time.
     configGraph = configGraphLib.resolveAll {
-      registry = validatedRegistry;
+      registry = configNames;
       contributionsFor = configName:
         applySendProperties {
           config = null;
@@ -609,7 +607,7 @@ in rec {
           contributions = map
             (c: c // {
               value =
-                if builtins.isFunction c.value
+                if lib.isFunction c.value
                 then throw ''
                   mulix: send.${configName} requires evaluated module options
                   (`opt`) and therefore cannot be consumed during module
@@ -636,20 +634,27 @@ in rec {
           (all configName must be declared in the registry before use)
         ''
       else true;
-    # Build an explicit attrset of receiver arguments.  Using the resolved graph
-    # itself as the RHS of `//` is subtly unsafe during module collection: a
-    # receiver function may be evaluated while the graph is still discovering
-    # that same module.  `genAttrs` fixes the argument namespace (all registry
-    # names exist immediately) while keeping each value lazy.
-    configGraphThunk = lib.genAttrs registryNames (name: configGraph.${name});
+    # Bound configNames are aliases of config.mulix.modules and therefore only
+    # exist after the target module-system fixpoint. They are present in the
+    # receiver namespace during collection, but accessing one there is an error.
+    boundConfigNames = builtins.filter
+      (name: (validatedRegistry.${name}.bind or null) == "mulix.modules")
+      registryNames;
+    configGraphThunk = lib.genAttrs registryNames (name:
+      if builtins.elem name boundConfigNames
+      then throw ''
+        mulix: configName '${name}' is bound to config.mulix.modules
+        and is not available during module collection.
+        Use it from a target fragment after the Nix module fixpoint is available.
+      ''
+      else configGraph.${name});
     targetArgsFor = target:
       builtins.removeAttrs
         callArgsBase
-        # `config` / `options` / `myconfig` は target time に module system
-        # (あるいは mulix の _module.args 注入) から供給される。
+        # `config` / `options` は target time に module system から供給される。
         # `modulesPath` / `osConfig` / `_module` は NixOS module system が
         # 供給するため、stub を remove して module system 由来の値が使われるようにする。
-        ["config" "options" "myconfig" "modulesPath" "osConfig" "_module"];
+        ["config" "options" "modulesPath" "osConfig" "_module"];
 
     # Argument names mulix itself injects into host `os` / `home` / `darwin` /
     # `shared` function fragments.  Everything else they request (`pkgs`, `lib`,
@@ -657,7 +662,7 @@ in rec {
     hostFragmentSuppliedArgs =
       lib.unique
       ([
-          "host" "mulib" "myconfig" "types" "mkOption" "mkEnableOption" "mkIf"
+          "host" "mulib" "types" "mkOption" "mkEnableOption" "mkIf"
           "mkMerge" "mkDefault" "mkForce" "mkOverride" "mkOrder" "mkBefore" "mkAfter"
         ]
         ++ registryNames
@@ -665,19 +670,12 @@ in rec {
         ++ lib.optional (inputs != {}) "inputs");
 
     targetModuleList = target:
-      [
-        ({config, lib, ...}: {
-          _module.args =
-            lib.mapAttrs
-            (name: _: (configGraphForConfig config).${name})
-            validatedRegistry;
-        })
-      ]
-      ++ targetLib.mkTargetModuleList {
+      targetLib.mkTargetModuleList {
         modules = normalizedModules;
         inherit target;
         specialArgsBase = targetArgsFor target;
         configGraphForConfig = configGraphForConfig;
+        configGraphForOptions = _: configGraphThunk;
         hostConfig = hostDef;
         supplied = hostFragmentSuppliedArgs;
       };
@@ -685,13 +683,12 @@ in rec {
       builtins.seq _inputChecks
       (builtins.seq _pathsKindCheck
       (builtins.seq _overlayCheck
-      (builtins.seq _readsCheck
       (builtins.seq hostViewCheck
       (builtins.seq _registryCheck
       (builtins.seq _receiverCheck
         (builtins.seq _sendCheck
           (builtins.seq _forceCheck
-            (builtins.seq dependencyGraph true)))))))));
+            (builtins.seq dependencyGraph true))))))));
   in
     builtins.seq _checksDone {
       host = hostAttrs;
@@ -706,7 +703,6 @@ in rec {
       hosts = composedHosts;
       # where the selected host's fields came from (see hostsLib.formatSources)
       hostSources = hostDef.sources;
-      moduleStateEdges = moduleStateEdgeList;
       overlays = resolvedOverlays.overlays;
       overlaysByName = resolvedOverlays.byName;
       # include this in a NixOS / nix-darwin configuration to apply the overlays
@@ -748,9 +744,8 @@ in rec {
   configurations = {
     # 収集対象。`paths` 1つで hosts / modules / overlays を全部収集する。
     paths ? [],
-    # hosts / modules / overlays を明示的に足す (optional)
+    # hosts / overlays を明示的に足す (optional)
     hostDefs ? {},
-    modules ? [],
     overlays ? [],
     # mulix 設定
     conditionNames ? {},
@@ -777,7 +772,7 @@ in rec {
     # 先に取り出す軽量 discovery を行う。
     #
     # host fragment は通常 `mulib` しか読まない (host を定義する側なので)。
-    # ここでは `host` / `config` / `myconfig` を throw にした callArgs で呼び出し、
+    # ここでは `host` / `config` と登録済み configName を throw にした callArgs で呼び出し、
     # `_mulixKind == "host"` なものだけを拾う。
     #
     # NixOS module system が提供する引数 (modulesPath, osConfig, ...) も
@@ -792,16 +787,21 @@ in rec {
         nixosStubArgs = lib.genAttrs [
           "modulesPath" "osConfig" "_module"
         ] (_: null);
+        discoveryConfigNames = lib.genAttrs (builtins.attrNames configNames) (name:
+          throw ''
+            mulix: configName '${name}' is not available during fleet discovery
+            A configName is injected after the target module-system fixpoint is built.
+          '');
         discoveryArgs =
           specialArgs
           // nixosStubArgs
+          // discoveryConfigNames
           // {
             mulib = mulibApi;
             host = throw "mulix: 'host' is not available during fleet discovery";
             inherit pkgs lib inputs;
             config = throw "mulix: 'config' is not available during fleet discovery";
             options = throw "mulix: 'options' is not available during fleet discovery";
-            myconfig = throw "mulix: 'myconfig' is not available during fleet discovery";
             inherit (mulibApi) types mkOption mkEnableOption mkIf mkMerge mkDefault mkForce
               mkOverride mkOrder mkBefore mkAfter;
           };
@@ -825,7 +825,7 @@ in rec {
     pkgsOf = system:
       if pkgsFor != null
       then
-        if builtins.isFunction pkgsFor
+        if lib.isFunction pkgsFor
         then pkgsFor system
         else pkgsFor.${system} or (throw "mulix: pkgsFor has no entry for system '${system}'")
       else if inputs ? nixpkgs
@@ -846,7 +846,7 @@ in rec {
         # ただし Nix の laziness により、host.system に依存しない部分は
         # 1回しか評価されないので、実質的なオーバーヘッドは少ない。
         r0 = mkMulix {
-          inherit paths hostDefs modules overlays conditionNames configNames force specialArgs;
+          inherit paths hostDefs overlays conditionNames configNames force specialArgs;
           host = hostName;
         };
         system = r0.host.system or null;
@@ -854,7 +854,7 @@ in rec {
       in {
         name = hostName;
         value = mkMulix {
-          inherit paths hostDefs modules overlays conditionNames configNames force specialArgs;
+          inherit paths hostDefs overlays conditionNames configNames force specialArgs;
           host = hostName;
           pkgs = hostPkgs;
         };

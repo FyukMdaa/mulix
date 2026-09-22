@@ -29,70 +29,113 @@
       # Force the result because registry validation is intentionally eager.
       builtins.deepSeq merged true;
 
-  validateRegistryEntry = configName: entry: let
-    hasType = entry ? type;
-    hasTypeCheck = hasType && (entry.type ? check);
-    strategy =
-      entry.merge or (throw ''
+  validateRegistryEntry = configName: entry:
+    if !isAttrs entry
+    then
+      throw ''
         mulix: invalid configName registry entry '${configName}'
-        missing required field: merge
-      '');
-    ownership = entry.ownership or "path";
-    type =
-      if hasType
-      then entry.type
-      else null;
-    defaultCheck =
-      if entry ? default
-      then validateType configName "default" type entry.default
-      else true;
-    orderedTypeCheck =
-      if strategy == "ordered"
-      then
-        if (type.name or null) == "listOf"
+        expected an attrset, got: ${builtins.typeOf entry}
+      ''
+    else let
+      binding = entry.bind or null;
+      isModulesBinding = binding == "mulix.modules";
+      hasType = entry ? type;
+      hasDefault = entry ? default;
+      strategy =
+        if isModulesBinding
+        then entry.merge or "single"
+        else entry.merge or (throw ''
+          mulix: invalid configName registry entry '${configName}'
+          missing required field: merge
+        '');
+      ownership = entry.ownership or "path";
+      normalized =
+        if isModulesBinding
+        then entry // {
+          type = lib.types.attrs;
+          merge = strategy;
+          default = {};
+          bind = "mulix.modules";
+        }
+        else entry;
+      type = normalized.type or null;
+      hasTypeCheck = type != null && (type ? check);
+      defaultCheck =
+        if !(normalized ? type)
         then true
-        else
+        else if normalized ? default
+        then validateType configName "default" normalized.type normalized.default
+        else true;
+      orderedTypeCheck =
+        if strategy == "ordered"
+        then
+          if (type.name or null) == "listOf"
+          then true
+          else
+            throw ''
+              mulix: invalid configName registry entry '${configName}'
+              merge strategy 'ordered' requires a list-compatible Nix type
+            ''
+        else true;
+      bindingCheck =
+        if binding != null && !isModulesBinding
+        then
           throw ''
             mulix: invalid configName registry entry '${configName}'
-            merge strategy 'ordered' requires a list-compatible Nix type
+            unknown binding '${binding}'
+            supported bindings: mulix.modules
           ''
-      else true;
-  in
-    if !hasType
-    then
-      throw ''
-        mulix: invalid configName registry entry '${configName}'
-        missing required field: type
-      ''
-    else if !hasTypeCheck
-    then
-      throw ''
-        mulix: invalid configName registry entry '${configName}'
-        field 'type' is not a Nix option type with a check function
-      ''
-    else if !(elem strategy mergeStrategies)
-    then
-      throw ''
-        mulix: invalid configName registry entry '${configName}'
-        invalid merge strategy '${strategy}',
-        expected one of: ${builtins.concatStringsSep ", " mergeStrategies}
-      ''
-    else if ownership != "path"
-    then
-      throw ''
-        mulix: invalid configName registry entry '${configName}'
-        invalid ownership '${ownership}', expected: path
-      ''
-    else if strategy == "ordered" && (entry ? default) && !(isList entry.default)
-    then
-      throw ''
-        mulix: invalid configName registry entry '${configName}'
-        merge strategy 'ordered' requires default to be a list
-      ''
-    else
-      builtins.seq orderedTypeCheck
-      (builtins.seq defaultCheck
-        (entry // {inherit ownership;}));
+        else if isModulesBinding && hasType
+        then
+          throw ''
+            mulix: invalid configName registry entry '${configName}'
+            bind = "mulix.modules" owns the type; do not specify 'type'
+          ''
+        else if isModulesBinding && hasDefault
+        then
+          throw ''
+            mulix: invalid configName registry entry '${configName}'
+            bind = "mulix.modules" owns the default; do not specify 'default'
+          ''
+        else if isModulesBinding && !(builtins.elem strategy ["single" "namespaced"])
+        then
+          throw ''
+            mulix: invalid configName registry entry '${configName}'
+            bind = "mulix.modules" only supports merge strategy 'single' or 'namespaced'
+          ''
+        else true;
+    in
+      builtins.seq bindingCheck
+      (if !(normalized ? type)
+       then throw ''
+         mulix: invalid configName registry entry '${configName}'
+         missing required field: type
+       ''
+       else if !hasTypeCheck
+       then throw ''
+         mulix: invalid configName registry entry '${configName}'
+         field 'type' is not a Nix option type with a check function
+       ''
+       else if !(elem strategy mergeStrategies)
+       then throw ''
+         mulix: invalid configName registry entry '${configName}'
+         invalid merge strategy '${strategy}',
+         expected one of: ${builtins.concatStringsSep ", " mergeStrategies}
+       ''
+       else if ownership != "path"
+       then throw ''
+         mulix: invalid configName registry entry '${configName}'
+         invalid ownership '${ownership}', expected: path
+       ''
+       else if strategy == "ordered" && (normalized ? default) && !(isList normalized.default)
+       then throw ''
+         mulix: invalid configName registry entry '${configName}'
+         merge strategy 'ordered' requires default to be a list
+       ''
+       else
+         builtins.seq orderedTypeCheck
+         (builtins.seq defaultCheck
+           (normalized // {inherit ownership;})));
 
   # reservedNames is intentionally opt-in here: the graph library can validate
   # a registry independently, while mkMulix supplies the actual public
@@ -574,7 +617,7 @@
 
   # ---- default handling ----
 
-  resolveConfigNameWithPresence = registry: configName: contributions: forceValue: forcePresent: let
+  resolveConfigNameWithPresence = registry: configName: contributions: forceValue: forcePresent: baseValues: let
     entry =
       registry.${
         configName
@@ -583,9 +626,15 @@
         (all configName must be declared in the registry before use)
       '');
 
-    base =
+    isModulesBinding = (entry.bind or null) == "mulix.modules";
+    hasBoundBase = isModulesBinding && builtins.hasAttr configName baseValues;
+    boundBase = if hasBoundBase then baseValues.${configName} else {};
+
+    sentValue =
       if contributions != []
       then resolveByStrategy entry.merge configName contributions
+      else if hasBoundBase
+      then boundBase
       else if entry ? default
       then entry.default
       else
@@ -595,12 +644,19 @@
           (this error is raised lazily, only when a receiver
            actually accesses this configName)
         '';
+
+    base =
+      if hasBoundBase && contributions != []
+      then
+        if isAttrs boundBase && isAttrs sentValue
+        then lib.recursiveUpdate boundBase sentValue
+        else sentValue
+      else sentValue;
+
   in let
     # force 適用 (force は最終値を override する)。
-    # base / force がともに attrset の場合は path 単位の deep merge、
-    # それ以外 (list / scalar) は force による全置換。
-    # (recursiveUpdate に非 attrset を渡すと builtins.zipAttrsWith 内部の
-    #  raw type error となり tryEval で捕捉できないため、明示的に分岐する)
+    # force が attrset の場合は path 単位の deep merge、
+    # それ以外は全置換。
     finalValue =
       if !forcePresent
       then base
@@ -612,18 +668,12 @@
     (validateType configName "resolved value" entry.type finalValue)
     finalValue;
 
-  # Backward-compatible public helper: the legacy four-argument form treats
-  # null as "no force". resolveAll uses resolveConfigNameWithPresence so an
-  # explicit force value of null remains distinguishable.
-  resolveConfigName = registry: configName: contributions: forceValue:
-    resolveConfigNameWithPresence registry configName contributions forceValue (forceValue != null);
-
   /*
   resolveAll:
     registry       = configName registry (name -> entry)。上記の通り
                      未登録 configName への send / force は error。
     contributions  = [{ module; configName; value; index; }]
-                      (従来の eager list。互換用)
+                      (optional eager list for direct library use)
     contributionsFor = configName: [{ module; configName; value; index; }]
                       (推奨。configName ごとに lazy に sender を評価する。
                        `enable` が別の configName を読む場合の循環を避けるために
@@ -653,6 +703,7 @@
     contributions ? [],
     contributionsFor ? null,
     force ? {},
+    baseValues ? {},
   }: let
     validated = validateRegistry registry;
 
@@ -711,7 +762,8 @@
         configName
         (contributionsOf configName)
         (force.${configName} or null)
-        (force ? ${configName})))
+        (builtins.hasAttr configName force)
+        baseValues))
     validated;
 in {
   inherit validateRegistry validateRegistryWithReserved validateRegistryEntry mergeStrategies;
@@ -719,5 +771,5 @@ in {
   # Exported for the differential tests (tests/property).
   inherit findSingleConflicts applyNestedLeafOverrides collectLeafWrites collectPathsIn pathKey recursiveUpdateMany mergeNamespacedMany findNamespacedConflicts;
   inherit resolveSingle resolveNamespaced resolveOrdered;
-  inherit resolveConfigName resolveAll;
+  inherit resolveAll;
 }

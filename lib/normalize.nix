@@ -3,7 +3,7 @@
 }: let
   errors = import ./errors.nix {inherit lib;};
   allowedTargets = ["os" "home" "darwin"];
-  allowedTopLevel = ["name" "options" "always" "os" "home" "darwin" "send" "reads"];
+  allowedTopLevel = ["name" "options" "always" "os" "home" "darwin" "send"];
   allowedAlwaysTargets = ["os" "home" "darwin" "send"];
 
   checkUnknownKeys = context: allowed: attrs:
@@ -39,7 +39,7 @@
     configName -> contribution の attrset
   */
   checkFragmentValue = context: position: value:
-    if builtins.isAttrs value || builtins.isFunction value
+    if builtins.isAttrs value || lib.isFunction value
     then value
     else
       throw ''
@@ -79,13 +79,13 @@ in rec {
   (builtins.functionArgs の attrset 値: paramName -> hasDefault)。
   */
   callModule = context: callArgs: def:
-    if builtins.isFunction def
+    if lib.isFunction def
     then let
-      argsSpec = builtins.functionArgs def;
+      argsSpec = lib.functionArgs def;
       missing =
         builtins.filter
         (arg:
-          !(builtins.isAttrs callArgs && callArgs ? ${arg})
+          !(builtins.isAttrs callArgs && builtins.hasAttr arg callArgs)
           && !argsSpec.${arg})
         (builtins.attrNames argsSpec);
     in
@@ -104,11 +104,11 @@ in rec {
 
   # function module が要求する引数名 (dependency discovery)
   functionArgsOf = def:
-    if builtins.isFunction def
-    then builtins.attrNames (builtins.functionArgs def)
+    if lib.isFunction def
+    then builtins.attrNames (lib.functionArgs def)
     else [];
 
-  isFunctionModule = def: builtins.isFunction def;
+  isFunctionModule = def: lib.isFunction def;
 
   /*
   normalizeModule:
@@ -208,7 +208,7 @@ in rec {
     */
     optionsRaw = cleanMod.options or {};
     optionsChecked =
-      if builtins.isAttrs optionsRaw || builtins.isFunction optionsRaw
+      if builtins.isAttrs optionsRaw || lib.isFunction optionsRaw
       then optionsRaw
       else
         throw ''
@@ -232,24 +232,8 @@ in rec {
       lib.unique
       (declaredArgs ++ optionsDeclaredArgs ++ fragmentDeclaredArgs ++ sendDeclaredArgs);
 
-    # Optional, explicit list of module names whose state this module reads
-    # through `myconfig`.  When present it replaces source-text inference.
-    readsRaw = cleanMod.reads or null;
-    readsChecked =
-      if readsRaw == null
-      then null
-      else if !(builtins.isList readsRaw) || builtins.any (x: !(builtins.isString x)) readsRaw
-      then
-        throw ''
-          mulix: invalid module shape
-          in module: ${contextWithSource}.reads
-          'reads' must be a list of module names (strings), got: ${builtins.typeOf readsRaw}
-        ''
-      else readsRaw;
-
     result = {
       inherit context isFunction declaredArgs receiverArgs;
-      reads = readsChecked;
       name = cleanMod.name;
       options = optionsChecked;
       optionsDeclaredArgs = optionsDeclaredArgs;

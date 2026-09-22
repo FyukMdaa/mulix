@@ -1,6 +1,6 @@
 {lib}: let
   targets = ["os" "home" "darwin"];
-  isEmptyStatic = frag: !(builtins.isFunction frag) && frag == {};
+  isEmptyStatic = frag: !(lib.isFunction frag) && frag == {};
   optOf = moduleName: config: config.mulix.modules.${moduleName};
   enableOf = moduleName: config: (optOf moduleName config).enable;
 
@@ -51,26 +51,46 @@
   # Standalone normalized records do not, so accept either representation.
   evalDefinition = mod: specialArgs:
     if mod ? definition
-    then if builtins.isFunction mod.definition
+    then if lib.isFunction mod.definition
       then mod.definition specialArgs
       else mod.definition
     else mod;
 
-  optionsFragment = {mod, specialArgsBase, configGraphForConfig}:
+  /*
+  The `pkgs` a module fragment sees at TARGET time.
+
+  The authoritative `pkgs` is the one the module system built, i.e.
+  `config._module.args.pkgs`: it has `nixpkgs.overlays`, `nixpkgs.config`
+  (allowUnfree, ...) and the real hostPlatform applied.  mkMulix's own `pkgs`
+  argument (a plain `legacyPackages.<system>`) has none of that, so handing it
+  to fragments makes overlay-provided attributes disappear
+  (`pkgs.lix.nix-init` -> "attribute 'nix-init' missing").
+
+  Precedence when building fragment arguments:
+      specialArgsBase.pkgs   (mkMulix `pkgs`; fallback when no module system pkgs)
+    < config._module.args.pkgs   (this function)
+    < args.pkgs           (explicit `specialArgs = { pkgs = ...; }`)
+
+  Lazy on purpose: nothing is forced until a fragment actually uses `pkgs`.
+  */
+  moduleSystemPkgs = config: specialArgsBase: {
+    pkgs = config._module.args.pkgs or (specialArgsBase.pkgs or null);
+  };
+
+  optionsFragment = {mod, specialArgsBase, configGraphForConfig, configGraphForOptions ? configGraphForConfig}:
     args @ {config, lib, ...}: let
-      graph = configGraphForConfig config;
+      graph = configGraphForOptions config;
       evalArgs =
         specialArgsBase
+        // moduleSystemPkgs config specialArgsBase
         // args
         // graph
         // {
           opt = optOf mod.name config;
-          # `myconfig` is `config.mulix.modules` itself (no separate storage).
-          myconfig = config.mulix.modules;
         };
       evaluated = evalDefinition mod evalArgs;
       raw = evaluated.options or {};
-      evaluatedOptions = if builtins.isFunction raw then raw evalArgs else raw;
+      evaluatedOptions = if lib.isFunction raw then raw evalArgs else raw;
 
       normalizedEnable =
         if evaluatedOptions ? enable
@@ -87,19 +107,19 @@
       # `args` は NixOS module system が供給する全引数 (config, lib, pkgs,
       # modulesPath, options, _module, specialArgs 経由の _module.args, ...)
       # を含む。`specialArgsBase` には mulix が供給する引数 (host, mulib,
-      # myconfig, configNames, ...) が入る。
+      # configNames, ...) が入る。
       # `args` を後で `//` することで、NixOS module system 由来の modulesPath 等
       # が specialArgsBase の stub を上書きする。
       common =
         specialArgsBase
+        // moduleSystemPkgs config specialArgsBase
         // args
-        // configGraphForConfig config
-        // {myconfig = config.mulix.modules;};
+        // configGraphForConfig config;
       evaluated = evalDefinition mod common;
       frag = evaluated.always.${target} or {};
     in
       if isEmptyStatic frag then {}
-      else if builtins.isFunction frag
+      else if lib.isFunction frag
       then frag (common // {opt = optOf mod.name config;})
       else frag;
 
@@ -107,14 +127,14 @@
     args @ {config, lib, ...}: let
       common =
         specialArgsBase
+        // moduleSystemPkgs config specialArgsBase
         // args
-        // configGraphForConfig config
-        // {myconfig = config.mulix.modules;};
+        // configGraphForConfig config;
       evaluated = evalDefinition mod common;
       frag = evaluated.${target} or {};
     in
       if isEmptyStatic frag then {}
-      else if builtins.isFunction frag
+      else if lib.isFunction frag
       then let
         result = frag (common // {opt = optOf mod.name config;});
       in {config = lib.mkIf (enableOf mod.name config) result;}
@@ -143,16 +163,16 @@
   A function fragment is wrapped so that
     * arguments the module system can supply (`pkgs`, `lib`, `config`,
       `modulesPath`, `_module.args` entries, ...) are supplied by it, and
-    * mulix's own arguments (`host`, `mulib`, `myconfig`, configNames,
+    * mulix's own arguments (`host`, `mulib`, configNames,
       specialArgs) are injected.
   `supplied` lists the names mulix injects; every other requested name is left
   to the module system.
   */
   mkHostFragmentModule = {frag, supplied, specialArgsBase, configGraphForConfig}:
-    if !builtins.isFunction frag
+    if !lib.isFunction frag
     then frag
     else let
-      requested = builtins.functionArgs frag;
+      requested = lib.functionArgs frag;
       suppliedSet = lib.genAttrs supplied (_: true);
     in
       lib.setFunctionArgs
@@ -164,7 +184,7 @@
           builtins.intersectAttrs suppliedSet
           (specialArgsBase
             // configGraphForConfig config
-            // {myconfig = config.mulix.modules;});
+            );
       in
         frag (builtins.intersectAttrs requested (args // injected)))
       ({config = false; lib = false;} // builtins.removeAttrs requested supplied);
@@ -179,12 +199,13 @@
     target,
     specialArgsBase,
     configGraphForConfig,
+    configGraphForOptions ? configGraphForConfig,
     hostConfig ? null,
     supplied ? [],
   }:
     let
       _targetCheck = checkTarget "mkTargetModuleList" target;
-      optionsFrags = map (mod: optionsFragment {inherit mod specialArgsBase configGraphForConfig;}) modules;
+      optionsFrags = map (mod: optionsFragment {inherit mod specialArgsBase configGraphForConfig configGraphForOptions;}) modules;
       bodyFrags = lib.concatMap
         (mod: mkModuleFragments {inherit mod target specialArgsBase configGraphForConfig;}) modules;
       hostFrags =

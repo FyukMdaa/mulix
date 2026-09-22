@@ -9,10 +9,49 @@ cd "$ROOT_DIR"
 # Shared prelude for the cases below that build a mkMulix result.
 PRE='
   let
-    lib = (import <nixpkgs> {}).lib; m = import ./lib { inherit lib; };
+    lib = (import <nixpkgs> {}).lib;
+
+    baseM = import ./lib { inherit lib; };
+    # Turn a test-only inline module into a discovered .nix file without
+    # losing the original function module dependency metadata.  The wrapper
+    # itself accepts __mulixTestModules, but setFunctionArgs makes
+    # builtins.functionArgs see the original module arguments.  The wrapper
+    # then forwards the complete module-system argument set to the original.
+    inlineModulePath = defs: i: let
+      d = builtins.elemAt defs i;
+      functionArgs = if lib.isFunction d then lib.functionArgs d else {};
+      argSpec = if functionArgs == {}
+        then "{}"
+        else "{ " + lib.concatStringsSep "; "
+          (map (name: "${name} = ${if builtins.getAttr name functionArgs then "true" else "false"}")
+            (builtins.attrNames functionArgs)) + "; }";
+      body = "let lib = (import <nixpkgs> {}).lib; wrapper = args@{ __mulixTestModules, ... }: let d = builtins.elemAt args.__mulixTestModules ${toString i}; in if lib.isFunction d then d args else d; in lib.setFunctionArgs wrapper ${argSpec}";
+    in /. + (builtins.unsafeDiscardStringContext
+      (builtins.toFile "mulix-test-module-${toString i}.nix" body));
+    mkM = args:
+      let
+        hasModules = args ? modules;
+        defs = if hasModules then args.modules else [];
+        generated =
+          if !hasModules then []
+          else if builtins.isPath defs then [ defs ]
+          else if builtins.isList defs then lib.imap0 (i: _: inlineModulePath defs i) defs
+          else [];
+        rawPaths = args.paths or [];
+        normalizedPaths = map (p: if builtins.isPath p then p else /. + (toString p)) rawPaths;
+        cleaned = builtins.removeAttrs args [ "modules" "paths" "specialArgs" ];
+        mergedSpecialArgs =
+          (args.specialArgs or {})
+          // (if hasModules && builtins.isList defs then { __mulixTestModules = defs; } else {});
+      in
+        baseM.mkMulix (cleaned // {
+          paths = normalizedPaths ++ generated;
+          specialArgs = mergedSpecialArgs;
+        });
+    m = baseM // { mkMulix = mkM; };
     T = lib.types;
     hostDefs = { h = m.host { name = "h"; system = "x86_64-linux"; }; };
-    build = { modules, configNames ? {} }: m.mkMulix {
+    build = { modules, configNames ? {} }: mkM {
       inherit hostDefs modules configNames; host = "h"; conditionNames = {};
     };
     reg = merge: type: { inherit type merge; };
@@ -102,10 +141,9 @@ expect_failure "empty enable list is rejected" '
   }) true
 ' "empty condition list"
 
-expect_success "mkMulix end-to-end static send" '
+expect_success "mkMulix end-to-end static send" "$PRE"'
   let
-    lib = (import <nixpkgs> {}).lib; m = import ./lib { inherit lib; };
-    result = m.mkMulix {
+    result = mkM {
       hostDefs = { h = m.host { name = "h"; system = "x86_64-linux"; }; };
       host = "h";
       conditionNames = {};
@@ -117,10 +155,9 @@ expect_success "mkMulix end-to-end static send" '
   in result.configGraph.foo.value == 42
 '
 
-expect_success "mkMulix preserves standard specialArgs" '
+expect_success "mkMulix preserves standard specialArgs" "$PRE"'
   let
-    lib = (import <nixpkgs> {}).lib; m = import ./lib { inherit lib; };
-    result = m.mkMulix {
+    result = mkM {
       hostDefs = { h = m.host { name = "h"; system = "x86_64-linux"; }; };
       host = "h";
       conditionNames = {};
@@ -133,10 +170,9 @@ expect_success "mkMulix preserves standard specialArgs" '
   in result.modules != []
 '
 
-expect_success "send supports mkIf and mkMerge" '
+expect_success "send supports mkIf and mkMerge" "$PRE"'
   let
-    lib = (import <nixpkgs> {}).lib; m = import ./lib { inherit lib; };
-    result = m.mkMulix {
+    result = mkM {
       hostDefs = { h = m.host { name = "h"; system = "x86_64-linux"; }; };
       host = "h";
       conditionNames = {};
@@ -151,10 +187,9 @@ expect_success "send supports mkIf and mkMerge" '
   in result.configGraph.foo == { a = 1; b = 2; }
 '
 
-expect_success "single allows disjoint sibling paths" '
+expect_success "single allows disjoint sibling paths" "$PRE"'
   let
-    lib = (import <nixpkgs> {}).lib; m = import ./lib { inherit lib; };
-    result = m.mkMulix {
+    result = mkM {
       hostDefs = { h = m.host { name = "h"; system = "x86_64-linux"; }; };
       host = "h";
       conditionNames = {};
@@ -167,10 +202,9 @@ expect_success "single allows disjoint sibling paths" '
   in result.configGraph.foo.shared == { left = 1; right = 2; }
 '
 
-expect_failure "single rejects overlapping paths" '
+expect_failure "single rejects overlapping paths" "$PRE"'
   let
-    lib = (import <nixpkgs> {}).lib; m = import ./lib { inherit lib; };
-    result = m.mkMulix {
+    result = mkM {
       hostDefs = { h = m.host { name = "h"; system = "x86_64-linux"; }; };
       host = "h";
       conditionNames = {};
@@ -183,10 +217,9 @@ expect_failure "single rejects overlapping paths" '
   in result.configGraph.foo
 ' "ownership conflict"
 
-expect_success "send supports mkForce priority" '
+expect_success "send supports mkForce priority" "$PRE"'
   let
-    lib = (import <nixpkgs> {}).lib; m = import ./lib { inherit lib; };
-    result = m.mkMulix {
+    result = mkM {
       hostDefs = { h = m.host { name = "h"; system = "x86_64-linux"; }; };
       host = "h";
       conditionNames = {};
@@ -199,10 +232,9 @@ expect_success "send supports mkForce priority" '
   in result.configGraph.foo.value == 2
 '
 
-expect_success "send supports root mkForce priority" '
+expect_success "send supports root mkForce priority" "$PRE"'
   let
-    lib = (import <nixpkgs> {}).lib; m = import ./lib { inherit lib; };
-    result = m.mkMulix {
+    result = mkM {
       hostDefs = { h = m.host { name = "h"; system = "x86_64-linux"; }; };
       host = "h";
       conditionNames = {};
@@ -215,10 +247,9 @@ expect_success "send supports root mkForce priority" '
   in result.configGraph.foo == { value = 2; }
 '
 
-expect_success "send supports mkBefore and mkAfter ordering" '
+expect_success "send supports mkBefore and mkAfter ordering" "$PRE"'
   let
-    lib = (import <nixpkgs> {}).lib; m = import ./lib { inherit lib; };
-    result = m.mkMulix {
+    result = mkM {
       hostDefs = { h = m.host { name = "h"; system = "x86_64-linux"; }; };
       host = "h";
       conditionNames = {};
@@ -231,10 +262,9 @@ expect_success "send supports mkBefore and mkAfter ordering" '
   in result.configGraph.foo == [ 1 2 ]
 '
 
-expect_success "mkMulix end-to-end dependency graph" '
+expect_success "mkMulix end-to-end dependency graph" "$PRE"'
   let
-    lib = (import <nixpkgs> {}).lib; m = import ./lib { inherit lib; };
-    result = m.mkMulix {
+    result = mkM {
       hostDefs = { h = m.host { name = "h"; system = "x86_64-linux"; }; };
       host = "h";
       conditionNames = {};
@@ -247,10 +277,9 @@ expect_success "mkMulix end-to-end dependency graph" '
   in builtins.elem "sender" (map (e: e.from) result.dependencyGraph.edges)
 '
 
-expect_failure "mkMulix end-to-end dependency cycle" '
+expect_failure "mkMulix end-to-end dependency cycle" "$PRE"'
   let
-    lib = (import <nixpkgs> {}).lib; m = import ./lib { inherit lib; };
-    result = m.mkMulix {
+    result = mkM {
       hostDefs = { h = m.host { name = "h"; system = "x86_64-linux"; }; };
       host = "h";
       conditionNames = {};
@@ -572,5 +601,17 @@ expect_success "mkForce still overrides an empty attrset (module order: mkForce 
     ];
   }).configGraph.foo == { x = 5; }
 '
+
+expect_success "configName can explicitly bind to mulix.modules" "$PRE"'
+  let r = build { configNames.hostconf = { bind = "mulix.modules"; }; modules = [ (m.module { name = "x"; }) ]; };
+  in (r.configGraph ? hostconf)
+'
+expect_failure "configName binding rejects user-supplied type" "$PRE"'
+  builtins.deepSeq (build { configNames.hostconf = { bind = "mulix.modules"; type = T.attrs; }; modules = []; }).configGraph true
+' "bind = \"mulix.modules\" owns the type"
+expect_failure "configName binding rejects user-supplied default" "$PRE"'
+  builtins.deepSeq (build { configNames.hostconf = { bind = "mulix.modules"; default = {}; }; modules = []; }).configGraph true
+' "bind = \"mulix.modules\" owns the default"
+
 
 finish "API CONTRACT TESTS"

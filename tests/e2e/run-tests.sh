@@ -11,7 +11,46 @@ cd "$ROOT_DIR"
 
 PRE='
   let
-    lib = (import <nixpkgs> {}).lib; m = import ./lib { inherit lib; };
+    lib = (import <nixpkgs> {}).lib;
+
+    baseM = import ./lib { inherit lib; };
+    # Turn a test-only inline module into a discovered .nix file without
+    # losing the original function module dependency metadata.  The wrapper
+    # itself accepts __mulixTestModules, but setFunctionArgs makes
+    # builtins.functionArgs see the original module arguments.  The wrapper
+    # then forwards the complete module-system argument set to the original.
+    inlineModulePath = defs: i: let
+      d = builtins.elemAt defs i;
+      functionArgs = if lib.isFunction d then lib.functionArgs d else {};
+      argSpec = if functionArgs == {}
+        then "{}"
+        else "{ " + lib.concatStringsSep "; "
+          (map (name: "${name} = ${if builtins.getAttr name functionArgs then "true" else "false"}")
+            (builtins.attrNames functionArgs)) + "; }";
+      body = "let lib = (import <nixpkgs> {}).lib; wrapper = args@{ __mulixTestModules, ... }: let d = builtins.elemAt args.__mulixTestModules ${toString i}; in if lib.isFunction d then d args else d; in lib.setFunctionArgs wrapper ${argSpec}";
+    in /. + (builtins.unsafeDiscardStringContext
+      (builtins.toFile "mulix-test-module-${toString i}.nix" body));
+    mkM = args:
+      let
+        hasModules = args ? modules;
+        defs = if hasModules then args.modules else [];
+        generated =
+          if !hasModules then []
+          else if builtins.isPath defs then [ defs ]
+          else if builtins.isList defs then lib.imap0 (i: _: inlineModulePath defs i) defs
+          else [];
+        rawPaths = args.paths or [];
+        normalizedPaths = map (p: if builtins.isPath p then p else /. + (toString p)) rawPaths;
+        cleaned = builtins.removeAttrs args [ "modules" "paths" "specialArgs" ];
+        mergedSpecialArgs =
+          (args.specialArgs or {})
+          // (if hasModules && builtins.isList defs then { __mulixTestModules = defs; } else {});
+      in
+        baseM.mkMulix (cleaned // {
+          paths = normalizedPaths ++ generated;
+          specialArgs = mergedSpecialArgs;
+        });
+    m = baseM // { mkMulix = mkM; };
     T = lib.types;
     en = { enable = lib.mkOption { type = T.bool; default = true; }; };
     reg = merge: type: { inherit type merge; };
@@ -19,7 +58,7 @@ PRE='
     # `out.y`; attrsOf drops keys whose only definition is `mkIf false`.
     mkRun = outType: { modules, configNames ? {}, force ? {}, target ? "os" }:
       let
-        r = m.mkMulix {
+        r = mkM {
           hostDefs.h = m.host { name = "h"; system = "x86_64-linux"; };
           host = "h"; conditionNames = {};
           inherit modules configNames force;
@@ -216,17 +255,17 @@ expect_success "ifDisabled #2 GUI / CLI: one always fragment picks the branch" "
 '
 
 
-expect_success "ifDisabled #3 service fallback: another module reads the state via myconfig" "$PRE"'
+expect_success "ifDisabled #3 service fallback: another module reads the state via an explicitly bound configName" "$PRE"'
   let mods = enable: [
         (m.module { name = "primary"; options.enable = lib.mkOption { type = T.bool; default = enable; }; os.out.service = "primary"; })
         (m.module {
           name = "fallback";
           options.enable = m.mulibApi.bool.true;
-          os = { myconfig, ... }: { out.fallback = lib.mkIf (!myconfig.primary.enable) "alternative"; };
+          os = { hostconf, ... }: { out.fallback = lib.mkIf (!hostconf.primary.enable) "alternative"; };
         })
       ];
-  in (runA { modules = mods true; }).out == { service = "primary"; }
-     && (runA { modules = mods false; }).out == { fallback = "alternative"; }
+  in (runA { configNames.hostconf = { bind = "mulix.modules"; }; modules = mods true; }).out == { service = "primary"; }
+     && (runA { configNames.hostconf = { bind = "mulix.modules"; }; modules = mods false; }).out == { fallback = "alternative"; }
 '
 
 # Directory collection, including a symlinked module file.

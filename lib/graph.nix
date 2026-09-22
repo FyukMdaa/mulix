@@ -94,7 +94,7 @@ in rec {
 
     edgeLines =
       map
-      (e: "  \"${nodeId e.from}\" -> \"${nodeId e.to}\" [label=\"${escape e.via}\"${if (e.kind or null) == "module-state" then ", style=dashed" else ""}];")
+      (e: "  \"${nodeId e.from}\" -> \"${nodeId e.to}\" [label=\"${escape e.via}\"];")
       edges;
   in
     lib.concatStringsSep "\n"
@@ -135,10 +135,7 @@ in rec {
 
     edgeLines =
       map
-      (e:
-        if (e.kind or null) == "module-state"
-        then "  ${nodeId e.from} -.->|${escape e.via}| ${nodeId e.to}"
-        else "  ${nodeId e.from} -->|${escape e.via}| ${nodeId e.to}")
+      (e: "  ${nodeId e.from} -->|${escape e.via}| ${nodeId e.to}")
       edges;
   in
     lib.concatStringsSep "\n"
@@ -181,10 +178,7 @@ in rec {
       then ["No declared dependencies."]
       else
         map
-        (e:
-          if (e.kind or null) == "module-state"
-          then "- `${e.to}` reads the state of `${e.from}` (myconfig)"
-          else "- `${e.from}` sends **${e.via}** → read by `${e.to}`")
+        (e: "- `${e.from}` sends **${e.via}** → read by `${e.to}`")
         edges;
   in
     lib.concatStringsSep "\n" (header ++ mermaidBlock ++ edgeList ++ [""]);

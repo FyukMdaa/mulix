@@ -49,7 +49,7 @@ in rec {
             mulix: invalid overlay shape
             required field 'name' must be a non-empty string
           ''
-        else if !(def ? overlay) || !(builtins.isFunction def.overlay)
+        else if !(def ? overlay) || !(lib.isFunction def.overlay)
         then
           throw ''
             mulix: invalid overlay shape

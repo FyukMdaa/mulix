@@ -1,17 +1,26 @@
 /* mulix option specification helpers. */
 {lib}: let
   mk = type: default: lib.mkOption {inherit type default;};
+  mkOptionalDefault = type: default:
+    if default == null
+    then lib.mkOption {inherit type;}
+    else mk type default;
 in {
   type = {
     bool = lib.types.bool;
     int = lib.types.int;
+    float = lib.types.float;
     str = lib.types.str;
-    attrs = lib.types.attrs;
+    lines = lib.types.lines;
     path = lib.types.path;
     package = lib.types.package;
+    attrs = lib.types.attrs;
     enum = values: lib.types.enum values;
+    oneOf = values: lib.types.oneOf values;
+    attrsOf = elemType: lib.types.attrsOf elemType;
     listOf = elemType: lib.types.listOf elemType;
     nullOr = elemType: lib.types.nullOr elemType;
+    either = a: b: lib.types.either a b;
   };
 
   bool = {
@@ -27,15 +36,22 @@ in {
   #   mulib.package pkgs.git                   package
   #   mulib.listOf mulib.type.str [ "a" ]      listOf <type>
   #   mulib.nullOr mulib.type.str null         nullOr <type>
-  attrs = value: mk lib.types.attrs value;
-  path = value: mk lib.types.path value;
-  package = value: mk lib.types.package value;
-  listOf = elemType: value: mk (lib.types.listOf elemType) value;
+  attrs = value: mkOptionalDefault lib.types.attrs value;
+  path = value: mkOptionalDefault lib.types.path value;
+  package = value: mkOptionalDefault lib.types.package value;
+  listOf = elemType: value: mkOptionalDefault (lib.types.listOf elemType) value;
+  # `null` is the public spelling for "no default".  `nullOr` is the one
+  # intentional exception: its `null` argument means literal default = null.
   nullOr = elemType: value: mk (lib.types.nullOr elemType) value;
 
-  str = value: mk lib.types.str value;
-  int = value: mk lib.types.int value;
-  enum = values: default: mk (lib.types.enum values) default;
+  str = value: mkOptionalDefault lib.types.str value;
+  int = value: mkOptionalDefault lib.types.int value;
+  float = value: mkOptionalDefault lib.types.float value;
+  lines = value: mkOptionalDefault lib.types.lines value;
+  enum = values: default: mkOptionalDefault (lib.types.enum values) default;
+  oneOf = values: default: mkOptionalDefault (lib.types.oneOf values) default;
+  attrsOf = elemType: default: mkOptionalDefault (lib.types.attrsOf elemType) default;
+  either = leftType: rightType: default: mkOptionalDefault (lib.types.either leftType rightType) default;
 
   # Select a result by the exact string value of `value`.  The `default`
   # branch is optional; without it, an unmatched value is an explicit error.

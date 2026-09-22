@@ -2,17 +2,11 @@
   errors = import ./errors.nix {inherit lib;};
   inherit (builtins) elem;
 
-  reservedNamespaces = ["is" "type" "feat" "role"];
+  # `type`, `feat`, and `role` names are intentionally unrestricted.  They are
+  # separate input namespaces, while `host.is` is the generated flat condition
+  # view.  A name may therefore legitimately occur in more than one namespace.
 
   # ---- host field classification --------------------------------------
-  #
-  #   single value (must agree across fragments) : system type
-  #   identity                                    : name
-  #   merged lists                                : feat role
-  #   generated (user input is an error)          : is
-  #   configuration (module-system merge)        : os home darwin shared
-  #
-  # `features` / `roles` are accepted as aliases of `feat` / `role`.
   singleFields = ["system" "type"];
   listFields = ["feat" "role"];
   listAliases = {
@@ -23,21 +17,16 @@
   allowedHostFields =
     ["name"] ++ singleFields ++ listFields ++ ["features" "roles"] ++ configFields;
 
-  # "x86_64-linux" -> { arch = "x86_64"; os = "linux"; }
   parseSystem = system: let
     parts = lib.splitString "-" system;
   in
     if builtins.length parts < 2
-    then {
-      arch = system;
-      os = null;
-    }
+    then { arch = system; os = null; }
     else {
       arch = builtins.head parts;
       os = builtins.concatStringsSep "-" (builtins.tail parts);
     };
 
-  # Flags derived from `system` alone: linux / darwin / <arch>.
   systemFlags = host: let
     sys = parseSystem (host.system or "");
   in
@@ -45,46 +34,14 @@
     ++ (lib.optional (sys.os == "darwin") "darwin")
     ++ (lib.optional (sys.arch != "") sys.arch);
 
-  # ---- merged-host accessors -------------------------------------------
   typeNamesOf = host:
-    if (host.type or null) != null
-    then [host.type]
-    else [];
+    if (host.type or null) != null then [host.type] else [];
 
-  # `host.is` is GENERATED: system flags plus the host's type / roles / features.
   generatedIsNames = host:
     systemFlags host ++ typeNamesOf host ++ (host.roles or []) ++ (host.features or []);
 
   unionAcross = extract: hosts:
     lib.unique (lib.concatMap extract (builtins.attrValues hosts));
-
-  checkReserved = context: kind: names: let
-    bad = builtins.filter (n: elem n reservedNamespaces) names;
-  in
-    if bad != []
-    then
-      throw ''
-        mulix: reserved namespace collision
-        host: ${context}
-        ${kind} name(s) [${builtins.concatStringsSep ", " bad}] collide
-        with reserved host condition namespaces: is/type/feat/role
-      ''
-    else names;
-
-  # Names that would be indistinguishable from a system flag in the generated
-  # `host.is` namespace.
-  checkSystemFlagCollision = context: kind: fleetFlags: names: let
-    bad = builtins.filter (n: elem n fleetFlags) names;
-  in
-    if bad != []
-    then
-      throw ''
-        mulix: reserved namespace collision
-        host: ${context}
-        ${kind} name(s) [${builtins.concatStringsSep ", " bad}] collide with
-        system-derived host.is flags (linux / darwin / architecture names)
-      ''
-    else names;
 
   mkBoolUniverse = universe: owned:
     builtins.listToAttrs (map
@@ -104,7 +61,7 @@
 
   quote = v: builtins.toJSON v;
 in rec {
-  inherit reservedNamespaces allowedHostFields singleFields listFields configFields;
+  inherit allowedHostFields singleFields listFields configFields;
 
   checkStringList = context: field: value:
     if !builtins.isList value
@@ -254,7 +211,7 @@ in rec {
           builtins.seq ok
           (builtins.foldl'
             (ok2: alias:
-              if host ? ${alias}
+              if builtins.hasAttr alias host
               then builtins.seq ok2 (checkStringList context alias host.${alias})
               else ok2)
             true
@@ -265,7 +222,7 @@ in rec {
         builtins.foldl'
         (ok: field:
           builtins.seq ok
-          (if host ? ${field} && !(builtins.isAttrs host.${field} || builtins.isFunction host.${field})
+          (if builtins.hasAttr field host && !(builtins.isAttrs host.${field} || lib.isFunction host.${field})
           then
             throw ''
               mulix: invalid host shape
@@ -321,24 +278,25 @@ in rec {
             if builtins.isList value
             then "hostDefs.${key}[${toString i}]"
             else "hostDefs.${key}";
+          checked = builtins.seq (validateHost label def) def;
           identityCheck =
-            if def.name != key
+            if checked.name != key
             then
               throw ''
                 mulix: host identity mismatch
                 host map key: ${key}
-                host.name: ${def.name}
+                host.name: ${checked.name}
                 source: ${label}
                 The host definition name must equal its map key.
               ''
             else true;
         in
-          builtins.seq (validateHost label def)
-          (builtins.seq identityCheck {
-            inherit def label;
+          builtins.seq identityCheck {
+            def = checked;
+            inherit label;
             source = null;
             dirName = null;
-          });
+          };
       in
         lib.imap0 one defs)
       (builtins.attrNames hostDefs);
@@ -403,7 +361,7 @@ in rec {
     configOf = target:
       lib.concatMap
       (f:
-        lib.optional (f.def ? ${target} && f.def.${target} != null) {
+        lib.optional (builtins.hasAttr target f.def && f.def.${target} != null) {
           frag = f.def.${target};
           source = fragmentLabel f;
         })
@@ -452,14 +410,20 @@ in rec {
       role = conditionNames.role or [];
     };
     check = kind: values: let
-      bad = builtins.filter (x: !(elem x declared.${kind})) values;
+      allowed =
+        if kind == "feat"
+        then lib.unique (declared.feat ++ systemFlags host)
+        else declared.${kind};
+      bad = builtins.filter (x: !(elem x allowed)) values;
     in
       if bad != []
       then
         throw ''
           mulix: undeclared ${kind} condition(s) in host '${context}':
           ${builtins.concatStringsSep ", " bad}
-          Add these names to conditionNames.${kind} before using them.
+          ${if kind == "feat"
+            then "Add these names to conditionNames.feat before using them, unless the name is already a generated system flag."
+            else "Add these names to conditionNames." + kind + " before using them."}
         ''
       else true;
   in
@@ -507,7 +471,7 @@ in rec {
 
     fleetSystemFlags = unionAcross systemFlags composed;
     typeUniverse = conditionNames.type or [];
-    featUniverse = conditionNames.feat or [];
+    featUniverse = lib.unique ((conditionNames.feat or []) ++ (host.features or []));
     roleUniverse = conditionNames.role or [];
     isUniverse =
       lib.unique (["linux" "darwin"] ++ fleetSystemFlags ++ typeUniverse ++ roleUniverse ++ featUniverse);
@@ -516,13 +480,10 @@ in rec {
     ownedFeat = host.features or [];
     ownedRole = host.roles or [];
 
-    reservedCheck =
-      builtins.seq (checkReserved hostName "feature" ownedFeat)
-      (builtins.seq (checkReserved hostName "role" ownedRole)
-        (builtins.seq (checkReserved hostName "type" ownedType)
-          (builtins.seq (checkSystemFlagCollision hostName "feature" (["linux" "darwin"] ++ fleetSystemFlags) ownedFeat)
-            (builtins.seq (checkSystemFlagCollision hostName "role" (["linux" "darwin"] ++ fleetSystemFlags) ownedRole)
-              (checkSystemFlagCollision hostName "type" (["linux" "darwin"] ++ fleetSystemFlags) ownedType)))));
+    # There is intentionally no cross-namespace name collision check here.
+    # `type`, `feat`, and `role` are independent user-controlled namespaces;
+    # `is` is the generated flattened view.
+    reservedCheck = true;
 
     view = {
       is = mkBoolUniverse isUniverse (generatedIsNames host);

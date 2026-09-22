@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Host composition, directory discovery, `myconfig` (module state), overlays.
+# Host composition, directory discovery, bound configName aliases, overlays.
 set -uo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -9,17 +9,58 @@ cd "$ROOT_DIR"
 
 PRE='
   let
-    lib = (import <nixpkgs> {}).lib; m = import ./lib { inherit lib; }; T = lib.types;
+    lib = (import <nixpkgs> {}).lib;
+    T = lib.types;
+    baseM = import ./lib { inherit lib; };
+    # Turn a test-only inline module into a discovered .nix file without
+    # losing the original function module dependency metadata.  The wrapper
+    # itself accepts __mulixTestModules, but setFunctionArgs makes
+    # builtins.functionArgs see the original module arguments.  The wrapper
+    # then forwards the complete module-system argument set to the original.
+    inlineModulePath = defs: i: let
+      d = builtins.elemAt defs i;
+      functionArgs = if lib.isFunction d then lib.functionArgs d else {};
+      argSpec = if functionArgs == {}
+        then "{}"
+        else "{ " + lib.concatStringsSep "; "
+          (map (name: "${name} = ${if builtins.getAttr name functionArgs then "true" else "false"}")
+            (builtins.attrNames functionArgs)) + "; }";
+      body = "let lib = (import <nixpkgs> {}).lib; wrapper = args@{ __mulixTestModules, ... }: let d = builtins.elemAt args.__mulixTestModules ${toString i}; in if lib.isFunction d then d args else d; in lib.setFunctionArgs wrapper ${argSpec}";
+    in /. + (builtins.unsafeDiscardStringContext
+      (builtins.toFile "mulix-test-module-${toString i}.nix" body));
+    mkM = args:
+      let
+        hasModules = args ? modules;
+        defs = if hasModules then args.modules else [];
+        generated =
+          if !hasModules then []
+          else if builtins.isPath defs then [ defs ]
+          else if builtins.isList defs then lib.imap0 (i: _: inlineModulePath defs i) defs
+          else [];
+        rawPaths = args.paths or [];
+        normalizedPaths = map (p: if builtins.isPath p then p else /. + (toString p)) rawPaths;
+        cleaned = builtins.removeAttrs args [ "modules" "paths" "specialArgs" ];
+        mergedSpecialArgs =
+          (args.specialArgs or {})
+          // (if hasModules && builtins.isList defs then { __mulixTestModules = defs; } else {});
+      in
+        baseM.mkMulix (cleaned // {
+          paths = normalizedPaths ++ generated;
+          specialArgs = mergedSpecialArgs;
+        });
+    # Test-only adapter: production mkMulix intentionally has no inline `modules` API.
+    m = baseM // { mkMulix = mkM; };
     cn = {
       type = [ "laptop" "desktop" ];
       feat = [ "gui" "niri" "amd" "gaming" "hyprland" "preservation" "secureboot" "tpm2" ];
       role = [ "desktop" "gaming" ];
     };
     H = attrs: m.host ({ name = "alpha"; } // attrs);
-    mkH = frags: m.mkMulix { hostDefs.alpha = frags; host = "alpha"; conditionNames = cn; };
+    mkH = frags: mkM { hostDefs.alpha = frags; host = "alpha"; conditionNames = cn; };
     fx = ./tests/fixtures;
-    inspiron = m.mkMulix {
+    inspiron = mkM {
       host = "Inspiron14-5445"; conditionNames = cn;
+      configNames.hostconf = { bind = "mulix.modules"; };
       paths = [ (fx + "/inspiron/hosts") (fx + "/inspiron/modules") (fx + "/inspiron/overlays") ];
     };
     evalT = r: target: (lib.evalModules {
@@ -54,6 +95,10 @@ expect_failure "2c. type conflict shows both values" "$PRE"'
 expect_failure "2d. type conflict shows the source of each value" "$PRE"'
   builtins.deepSeq (mkH [ (H { type = "laptop"; }) (H { type = "desktop"; }) ]).host true
 ' "source: hostDefs.alpha[1]"
+
+expect_failure "2e. malformed hostDefs entries get a mulix host-shape error" "$PRE"'
+  builtins.deepSeq (mkM { host = "h"; conditionNames = cn; hostDefs.h = null; }).host true
+' "mulix: invalid host shape"
 
 expect_success "3. same system in two fragments is accepted" "$PRE"'
   (mkH [ (H { system = "x86_64-linux"; }) (H { system = "x86_64-linux"; }) ]).host.system == "x86_64-linux"
@@ -96,7 +141,7 @@ expect_failure "7b. the error names the host" "$PRE"'
 ' "host: alpha"
 
 expect_failure "7c. conditionNames.is is reserved too" "$PRE"'
-  builtins.deepSeq (m.mkMulix { hostDefs.alpha = H { }; host = "alpha"; conditionNames = { is = [ "laptop" ]; }; }).host true
+  builtins.deepSeq (mkM { hostDefs.alpha = H { }; host = "alpha"; conditionNames = { is = [ "laptop" ]; }; }).host true
 ' "conditionNames.is is reserved for generated state"
 
 expect_success "7d. is is generated from system, type, role and feat" "$PRE"'
@@ -104,19 +149,17 @@ expect_success "7d. is is generated from system, type, role and feat" "$PRE"'
   in is.linux && is.x86_64 && !is.darwin && is.laptop && is.gaming && is.niri && !is.gui
 '
 
-expect_failure "7e. a feature named like a system flag is rejected" "$PRE"'
-  builtins.deepSeq (m.mkMulix {
-    hostDefs.alpha = H { system = "x86_64-linux"; feat = [ "linux" ]; }; host = "alpha";
-    conditionNames = { feat = [ "linux" ]; };
-  }).host true
-' "system-derived host.is flags"
+expect_success "7e. feat may reuse a generated system flag name" "$PRE"'
+  let h = (mkH [ (H { system = "x86_64-linux"; feat = [ "linux" ]; }) ]).host;
+  in h.is.linux && h.feat.linux
+' 
 
 expect_failure "7f. unknown host field is a typo error with a suggestion" "$PRE"'
   H { featt = [ "gui" ]; }
 ' "did you mean"
 
 expect_failure "7g. hostDefs key must equal the host name" "$PRE"'
-  builtins.deepSeq (m.mkMulix { hostDefs.beta = H { }; host = "beta"; conditionNames = cn; }).host true
+  builtins.deepSeq (mkM { hostDefs.beta = H { }; host = "beta"; conditionNames = cn; }).host true
 ' "host identity mismatch"
 
 expect_failure "7h. undeclared feature is still rejected" "$PRE"'
@@ -128,11 +171,11 @@ expect_failure "7h. undeclared feature is still rejected" "$PRE"'
 # ===========================================================================
 
 expect_failure "8. conflict from files shows both source files" "$PRE"'
-  builtins.deepSeq (m.mkMulix { host = "alpha"; conditionNames = cn; paths = [ (fx + "/conflict/hosts") ]; }).host true
+  builtins.deepSeq (mkM { host = "alpha"; conditionNames = cn; paths = [ (fx + "/conflict/hosts") ]; }).host true
 ' "source: hosts/alpha/workstation.nix"
 
 expect_failure "8b. ... and the other one" "$PRE"'
-  builtins.deepSeq (m.mkMulix { host = "alpha"; conditionNames = cn; paths = [ (fx + "/conflict/hosts") ]; }).host true
+  builtins.deepSeq (mkM { host = "alpha"; conditionNames = cn; paths = [ (fx + "/conflict/hosts") ]; }).host true
 ' "source: hosts/alpha/default.nix"
 
 expect_success "8c. sources of feat are tracked per fragment" "$PRE"'
@@ -159,14 +202,14 @@ expect_success "8f. the composition report lists the source files" "$PRE"'
 '
 
 expect_success "8g. a fragment in the wrong host directory is a WARNING, not an error" "$PRE"'
-  let r = m.mkMulix { host = "alpha"; conditionNames = cn; paths = [ (fx + "/mismatch/hosts") ]; };
+  let r = mkM { host = "alpha"; conditionNames = cn; paths = [ (fx + "/mismatch/hosts") ]; };
       reps = (m.diagnosticsLib.run { modules = r.modules; registry = {}; hosts = r.hosts; hostFragments = r.hostFragments; }).reports;
   in builtins.attrNames r.hosts == [ "alpha" "beta" ]
      && builtins.any (x: x.rule == "host-directory-mismatch" && x.severity == "warning") reps
 '
 
 expect_success "8i. default.nix is the base fragment: it comes first even when a sibling sorts before it" "$PRE"'
-  let r = m.mkMulix { host = "alpha"; conditionNames = cn; paths = [ (fx + "/order/hosts") ]; };
+  let r = mkM { host = "alpha"; conditionNames = cn; paths = [ (fx + "/order/hosts") ]; };
   in map (f: f.source) r.hostSources.fragments == [ "hosts/alpha/default.nix" "hosts/alpha/aaa.nix" "hosts/alpha/zzz.nix" ]
      && r.host.features == [ "niri" "gui" "amd" ]
 '
@@ -187,7 +230,7 @@ expect_success "9. paths = [ hosts modules overlays ] discovers the whole config
 '
 
 expect_success "10. hosts/test/{default,hardware}.nix are both loaded as fragments of one host" "$PRE"'
-  let r = m.mkMulix { host = "test"; conditionNames = cn; paths = [ (fx + "/simple/hosts") ]; };
+  let r = mkM { host = "test"; conditionNames = cn; paths = [ (fx + "/simple/hosts") ]; };
   in builtins.length r.hostSources.fragments == 2
      && r.host.features == [ "amd" ]
      && r.host.type.desktop
@@ -195,31 +238,15 @@ expect_success "10. hosts/test/{default,hardware}.nix are both loaded as fragmen
 '
 
 expect_success "10b. host identity comes from mulib.host name, not the directory" "$PRE"'
-  builtins.attrNames (m.mkMulix { host = "alpha"; conditionNames = cn; paths = [ (fx + "/mismatch/hosts") ]; }).hosts == [ "alpha" "beta" ]
+  builtins.attrNames (mkM { host = "alpha"; conditionNames = cn; paths = [ (fx + "/mismatch/hosts") ]; }).hosts == [ "alpha" "beta" ]
 '
 
 expect_failure "10c. an unknown host lists the known ones" "$PRE"'
-  builtins.deepSeq (m.mkMulix { host = "nope"; conditionNames = cn; paths = [ (fx + "/simple/hosts") ]; }).host true
+  builtins.deepSeq (mkM { host = "nope"; conditionNames = cn; paths = [ (fx + "/simple/hosts") ]; }).host true
 ' "known hosts: test"
 
 expect_success "10d. a single .nix file may be given in paths" "$PRE"'
-  (m.mkMulix { host = "test"; conditionNames = cn; paths = [ (fx + "/simple/hosts/test/default.nix") ]; }).host.name == "test"
-'
-
-expect_success "10e. `modules = ./dir` keeps working next to `paths`" "$PRE"'
-  map (x: x.name) (m.mkMulix {
-    host = "test"; conditionNames = cn;
-    paths = [ (fx + "/simple/hosts") ];
-    modules = fx + "/inspiron/modules";
-  }).modules == [ "constants" "git" "graphics" ]
-'
-
-expect_success "10f. legacy modules and discovered modules are both present, in that order" "$PRE"'
-  map (x: x.name) (m.mkMulix {
-    host = "test"; conditionNames = cn;
-    paths = [ (fx + "/simple/modules") (fx + "/simple/hosts") ];
-    modules = [ (m.module { name = "explicit"; }) ];
-  }).modules == [ "explicit" "foo" ]
+  (mkM { host = "test"; conditionNames = cn; paths = [ (fx + "/simple/hosts/test/default.nix") ]; }).host.name == "test"
 '
 
 # A directory that is built at run time: dropping a file in is enough.
@@ -232,20 +259,20 @@ cat > "$tmp/modules/foo.nix" <<'EOF'
 { mulib, ... }: mulib.module { name = "foo"; }
 EOF
 expect_success "11. modules/foo.nix is recognized" "$PRE"'
-  map (x: x.name) (m.mkMulix { host = "h"; conditionNames = cn; paths = [ (/. + "'"$tmp"'/hosts") (/. + "'"$tmp"'/modules") ]; }).modules == [ "foo" ]
+  map (x: x.name) (mkM { host = "h"; conditionNames = cn; paths = [ (/. + "'"$tmp"'/hosts") (/. + "'"$tmp"'/modules") ]; }).modules == [ "foo" ]
 '
 cat > "$tmp/modules/bar.nix" <<'EOF'
 { mulib, ... }: mulib.module { name = "bar"; }
 EOF
 expect_success "11b. adding modules/bar.nix is enough for it to be recognized" "$PRE"'
-  map (x: x.name) (m.mkMulix { host = "h"; conditionNames = cn; paths = [ (/. + "'"$tmp"'/hosts") (/. + "'"$tmp"'/modules") ]; }).modules == [ "bar" "foo" ]
+  map (x: x.name) (mkM { host = "h"; conditionNames = cn; paths = [ (/. + "'"$tmp"'/hosts") (/. + "'"$tmp"'/modules") ]; }).modules == [ "bar" "foo" ]
 '
 cat > "$tmp/modules/helper.nix" <<'EOF'
 { lib = 1; }
 EOF
-expect_failure "11c. a helper file in a discovered directory is reported, not ignored" "$PRE"'
-  builtins.deepSeq (m.mkMulix { host = "h"; conditionNames = cn; paths = [ (/. + "'"$tmp"'/hosts") (/. + "'"$tmp"'/modules") ]; }).modules true
-' "unrecognized file in paths"
+expect_success "11c. a helper file in a discovered directory is ignored" "$PRE"'
+  map (x: x.name) (mkM { host = "h"; conditionNames = cn; paths = [ (/. + "'"$tmp"'/hosts") (/. + "'"$tmp"'/modules") ]; }).modules == [ "bar" "foo" ]
+' 
 rm "$tmp/modules/helper.nix"
 
 # ===========================================================================
@@ -263,16 +290,17 @@ expect_success "12i. a function fragment gets pkgs from the module system and ho
   (evalT inspiron "os").initrd == "PKGS-Inspiron14-5445"
 '
 
-expect_success "12l. a host fragment can read module state through myconfig" "$PRE"'
-  let r = m.mkMulix {
+expect_success "12l. a host fragment can read the explicitly bound module-options configName" "$PRE"'
+  let r = mkM {
     conditionNames = cn; host = "alpha";
-    hostDefs.alpha = H { os = { myconfig, ... }: { out.user = myconfig.constants.username; }; };
+    configNames.hostconf = { bind = "mulix.modules"; };
+    hostDefs.alpha = H { os = { hostconf, ... }: { out.user = hostconf.constants.username; }; };
     modules = [ (m.module { name = "constants"; options.enable = m.mulibApi.bool.true; options.username = m.mulibApi.str "alice"; }) ];
   }; in (evalT r "os").user == "alice"
-'
+' 
 
 expect_success "12m. a host fragment can receive a configName as an argument" "$PRE"'
-  let r = m.mkMulix {
+  let r = mkM {
     conditionNames = cn; host = "alpha";
     configNames.openPorts = { type = T.listOf T.str; merge = "ordered"; default = []; };
     hostDefs.alpha = H { os = { openPorts, ... }: { out.ports = openPorts; }; };
@@ -280,7 +308,7 @@ expect_success "12m. a host fragment can receive a configName as an argument" "$
   }; in (evalT r "os").ports == [ "22/tcp" ]
 '
 
-expect_success "12j. `shared` applies to every target" "$PRE"'
+expect_success "12j. shared applies to every target" "$PRE"'
   (evalT inspiron "home").sharedFromTpm2 && (evalT inspiron "os").sharedFromTpm2
 '
 
@@ -289,137 +317,152 @@ expect_success "12k. os fragments do not leak into the home target" "$PRE"'
 '
 
 # ===========================================================================
-# myconfig = config.mulix.modules
+# configName bindings
 # ===========================================================================
 
-expect_success "12. a module reads another module state through myconfig" "$PRE"'
+expect_success "12. an explicitly bound configName exposes config.mulix.modules" "$PRE"'
   (evalT inspiron "home").gitUser == "alice"
 '
 
-expect_success "13. no configName registration is needed for it" "$PRE"'
-  inspiron.dependencyGraph.edges != [] && (m.mkMulix { host = "Inspiron14-5445"; conditionNames = cn; configNames = {};
-    paths = [ (fx + "/inspiron/hosts") (fx + "/inspiron/modules") ]; }).modules != []
-'
+expect_failure "13. an unregistered configName is not injected implicitly" "$PRE"'
+  builtins.deepSeq (mkM {
+    host = "h"; conditionNames = cn;
+    modules = [ ({ hostconf, mulib, ... }: mulib.module { name = "a"; }) ];
+  }).modules true
+' "unknown configName in receiver arguments"
 
-expect_success "12b. myconfig IS config.mulix.modules (a value set there is what is read)" "$PRE"'
+expect_success "12b. the bound configName sees the actual module-system values" "$PRE"'
   let ev = lib.evalModules { modules = (inspiron.targetModuleList "home") ++ [ {
       options.out = lib.mkOption { type = T.lazyAttrsOf T.raw; default = {}; };
       config.mulix.modules.constants.username = "bob"; } ]; };
   in ev.config.out.gitUser == "bob"
 '
 
-expect_failure "14. reading a module that does not exist is an explicit error" "$PRE"'
-  (evalT (m.mkMulix { host = "h"; conditionNames = cn; hostDefs.h = m.host { name = "h"; }; modules = [
-    (m.module { name = "a"; options.enable = m.mulibApi.bool.true; os = { myconfig, ... }: { out.x = myconfig.notExist.foo; }; }) ]; }) "os").x
-' "notExist"
+expect_failure "14. a bound configName cannot be consumed during collection" "$PRE"'
+  builtins.deepSeq
+    (mkM {
+      host = "h"; conditionNames = cn;
+      configNames.hostconf = { bind = "mulix.modules"; };
+      modules = [
+        ({ hostconf, mulib, ... }:
+          builtins.seq hostconf.foo
+            (mulib.module { name = "a"; options.x = hostconf.foo; }))
+      ];
+    }).modules
+    true
+' "is bound to config.mulix.modules"
 
-expect_failure "14b. an explicit reads naming a missing module is rejected with a suggestion" "$PRE"'
-  builtins.deepSeq (m.mkMulix { host = "h"; conditionNames = cn; hostDefs.h = m.host { name = "h"; }; modules = [
-    (m.module { name = "constants"; })
-    (m.module { name = "git"; reads = [ "constnts" ]; }) ]; }).modules true
-' "reads an unknown module"
-
-cat > "$tmp/modules/typo.nix" <<'EOF'
-{ mulib, ... }:
-mulib.module {
-  name = "typo";
-  os = { myconfig, ... }: { out.x = myconfig.constant.username; };
-}
-EOF
-cat > "$tmp/modules/constants.nix" <<'EOF'
-{ mulib, ... }: mulib.module { name = "constants"; options.username = mulib.str "u"; }
-EOF
-expect_success "14c. an inferred read of a missing module is reported by diagnostics (with a suggestion)" "$PRE"'
-  let r = m.mkMulix { host = "h"; conditionNames = cn; paths = [ (/. + "'"$tmp"'/hosts") (/. + "'"$tmp"'/modules") ]; };
-      reps = (m.diagnosticsLib.run { modules = r.modules; registry = {}; }).reports;
-      bad = builtins.filter (x: x.rule == "myconfig-unknown-module") reps;
-  in builtins.length bad == 1 && lib.hasInfix "constant" (builtins.head bad).message && lib.hasInfix "did you mean" (builtins.head bad).message
-'
-rm "$tmp/modules/typo.nix" "$tmp/modules/constants.nix"
-
-expect_failure "15. an option type error in module state is detected as usual" "$PRE"'
-  (lib.evalModules { modules = (inspiron.targetModuleList "home") ++ [ {
-      options.out = lib.mkOption { type = T.lazyAttrsOf T.raw; default = {}; };
-      config.mulix.modules.constants.username = 5; } ]; }).config.out.gitUser
-' "is not of type"
-
-expect_success "16. the dependency graph shows git reading constants" "$PRE"'
-  builtins.elem { from = "constants"; to = "git"; via = "module-state"; kind = "module-state"; } inspiron.dependencyGraph.edges
-'
-
-expect_success "16b. module-state edges are drawn dashed (mermaid and dot)" "$PRE"'
-  lib.hasInfix "-.->|module-state|" (m.graphLib.toMermaid { edges = inspiron.dependencyGraph.edges; })
-  && lib.hasInfix "style=dashed" (m.graphLib.toDot { edges = inspiron.dependencyGraph.edges; })
-'
-
-expect_success "16c. a module reading its own state is not a dependency" "$PRE"'
-  (m.mkMulix { host = "h"; conditionNames = cn; hostDefs.h = m.host { name = "h"; }; modules = [
-    (m.module { name = "a"; reads = [ "a" ]; }) ]; }).dependencyGraph.edges == []
-'
-
-cat > "$tmp/modules/a.nix" <<'EOF'
-{ mulib, ... }:
-mulib.module { name = "A"; home = { myconfig, ... }: { out.a = myconfig.B.x; }; }
-EOF
-cat > "$tmp/modules/b.nix" <<'EOF'
-{ mulib, ... }:
-mulib.module { name = "B"; home = { myconfig, ... }: { out.b = myconfig.A.y; }; }
-EOF
-expect_failure "17. a module-state cycle between files is detected" "$PRE"'
-  builtins.deepSeq (m.mkMulix { host = "h"; conditionNames = cn; paths = [ (/. + "'"$tmp"'/hosts") (/. + "'"$tmp"'/modules") ]; }).dependencyGraph true
-' "mulix: module-state dependency cycle detected"
-
-expect_failure "17b. ... and the message names the modules and the edge kind" "$PRE"'
-  builtins.deepSeq (m.mkMulix { host = "h"; conditionNames = cn; paths = [ (/. + "'"$tmp"'/hosts") (/. + "'"$tmp"'/modules") ]; }).dependencyGraph true
-' "--module-state-->"
-rm "$tmp/modules/a.nix" "$tmp/modules/b.nix"
-
-expect_failure "17c. an explicit-reads cycle is detected too" "$PRE"'
-  builtins.deepSeq (m.mkMulix { host = "h"; conditionNames = cn; hostDefs.h = m.host { name = "h"; }; modules = [
-    (m.module { name = "A"; reads = [ "B" ]; }) (m.module { name = "B"; reads = [ "A" ]; }) ]; }).dependencyGraph true
-' "module-state dependency cycle detected"
-
-expect_failure "17d. one cycle check covers configName and module-state edges together" "$PRE"'
-  builtins.deepSeq (m.mkMulix { host = "h"; conditionNames = cn; hostDefs.h = m.host { name = "h"; };
-    configNames.foo = { type = T.listOf T.int; merge = "ordered"; default = []; };
+expect_success "14b. bound configName and ordinary configName coexist" "$PRE"'
+  let r = mkM {
+    host = "alpha"; conditionNames = cn;
+    configNames = {
+      hostconf = { bind = "mulix.modules"; };
+      openPorts = { type = T.listOf T.str; merge = "ordered"; default = []; };
+    };
+    hostDefs.alpha = H { os = { hostconf, openPorts, ... }: {
+      out.user = hostconf.constants.username;
+      out.ports = openPorts;
+    }; };
     modules = [
-      (m.module { name = "P"; send.foo = [ 1 ]; reads = [ "Q" ]; })
-      ({ foo, mulib, ... }: mulib.module { name = "Q"; })
-    ]; }).dependencyGraph true
-' "dependency cycle detected"
-
-expect_success "17e. `reads = []` switches inference off for that module" "$PRE"'
-  (m.mkMulix { host = "h"; conditionNames = cn; hostDefs.h = m.host { name = "h"; }; modules = [
-    (m.module { name = "A"; reads = [ ]; }) (m.module { name = "B"; reads = [ "A" ]; }) ]; }).dependencyGraph.edges
-    == [ { from = "A"; to = "B"; via = "module-state"; kind = "module-state"; } ]
-'
-
-expect_success "18. myconfig and a configName coexist without interfering" "$PRE"'
-  let r = m.mkMulix { host = "h"; conditionNames = cn; hostDefs.h = m.host { name = "h"; };
-    configNames.openPorts = { type = T.listOf T.str; merge = "ordered"; default = []; };
-    modules = [
-      (m.module { name = "constants"; options.enable = m.mulibApi.bool.true; options.user = m.mulibApi.str "alice"; })
+      (m.module { name = "constants"; options.enable = m.mulibApi.bool.true; options.username = m.mulibApi.str "alice"; })
       (m.module { name = "ssh"; options.enable = m.mulibApi.bool.true; send.openPorts = [ "22/tcp" ]; })
-      (m.module { name = "firewall"; options.enable = m.mulibApi.bool.true;
-        os = { openPorts, myconfig, ... }: { out.ports = openPorts; out.user = myconfig.constants.user; }; })
-    ]; };
-  in (evalT r "os") == { ports = [ "22/tcp" ]; user = "alice"; }
+    ];
+  };
+  in (evalT r "os") == { user = "alice"; ports = [ "22/tcp" ]; }
 '
 
-expect_success "18b. myconfig is not a configName: it cannot be registered as one" "$PRE"'
-  (builtins.tryEval (builtins.deepSeq (m.mkMulix { host = "h"; conditionNames = cn; hostDefs.h = m.host { name = "h"; };
-    configNames.myconfig = { type = T.attrs; merge = "single"; default = {}; }; modules = []; }).host true)).success == false
-'
-
-expect_success "18c. myconfig is also available in send functions" "$PRE"'
-  let r = m.mkMulix { host = "h"; conditionNames = cn; hostDefs.h = m.host { name = "h"; };
-    configNames.who = { type = T.listOf T.str; merge = "ordered"; default = []; };
+expect_success "14c. send can target a bound configName" "$PRE"'
+  let r = mkM {
+    host = "alpha"; conditionNames = cn;
+    configNames = {
+      hostconf = { bind = "mulix.modules"; };
+      source = { type = T.attrs; merge = "single"; default = {}; };
+    };
+    hostDefs.alpha = H { os = { hostconf, ... }: {
+      out.user = hostconf.published;
+      out.username = hostconf.constants.username;
+    }; };
     modules = [
-      (m.module { name = "constants"; options.enable = m.mulibApi.bool.true; options.user = m.mulibApi.str "alice"; })
-      (m.module { name = "s"; options.enable = m.mulibApi.bool.true; send.who = { myconfig, ... }: [ myconfig.constants.user ]; })
-      (m.module { name = "r"; options.enable = m.mulibApi.bool.true; os = { who, ... }: { out.who = who; }; })
-    ]; };
-  in (evalT r "os").who == [ "alice" ]
+      (m.module { name = "constants"; options.enable = m.mulibApi.bool.true; options.username = m.mulibApi.str "alice"; })
+      (m.module { name = "source"; options.enable = m.mulibApi.bool.true; send.source = { username = "alice"; }; })
+      (m.module {
+        name = "publisher";
+        options.enable = m.mulibApi.bool.true;
+        send.hostconf = { source, ... }: { published = source.username; };
+      })
+    ];
+  };
+  in (evalT r "os") == { user = "alice"; username = "alice"; }
+'
+
+expect_success "14d. force can override a bound configName" "$PRE"'
+  let r = mkM {
+    host = "alpha"; conditionNames = cn;
+    configNames.hostconf = { bind = "mulix.modules"; };
+    force.hostconf = { constants = { username = "bob"; }; };
+    hostDefs.alpha = H { home = { hostconf, ... }: { out.user = hostconf.constants.username; }; };
+    modules = [ (m.module { name = "constants"; options.enable = m.mulibApi.bool.true; options.username = m.mulibApi.str "alice"; }) ];
+  };
+  in (evalT r "home").user == "bob"
+'
+
+expect_success "15. bound configNames use the ordinary dependency graph" "$PRE"'
+  let r = mkM {
+    host = "h"; conditionNames = cn;
+    configNames.hostconf = { bind = "mulix.modules"; };
+    modules = [
+      ({ hostconf, mulib, ... }: mulib.module { name = "receiver"; })
+      ({ mulib, ... }: mulib.module { name = "sender"; send.hostconf = { x = 1; }; })
+    ];
+  };
+  in builtins.elem { from = "sender"; to = "receiver"; via = "hostconf"; } r.dependencyGraph.edges
+'
+
+expect_failure "15b. cycles through bound configNames are detected by the normal dependency graph" "$PRE"'
+  builtins.deepSeq (mkM {
+    host = "h"; conditionNames = cn;
+    configNames = {
+      hostconf = { bind = "mulix.modules"; };
+      other = { type = T.attrs; merge = "single"; default = {}; };
+    };
+    modules = [
+      ({ other, mulib, ... }: mulib.module { name = "A"; send.hostconf = { x = other.x; }; })
+      ({ hostconf, mulib, ... }: mulib.module { name = "B"; send.other = { x = hostconf.x; }; })
+    ];
+  }).dependencyGraph true
+' "mulix: dependency cycle detected"
+
+expect_failure "15c. a binding owns the target type" "$PRE"'
+  builtins.deepSeq (mkM {
+    host = "h"; conditionNames = cn;
+    configNames.hostconf = { bind = "mulix.modules"; type = T.attrs; };
+  }).host true
+' "bind = \"mulix.modules\" owns the type"
+
+expect_failure "15d. a binding owns the default" "$PRE"'
+  builtins.deepSeq (mkM {
+    host = "h"; conditionNames = cn;
+    configNames.hostconf = { bind = "mulix.modules"; default = {}; };
+  }).host true
+' "bind = \"mulix.modules\" owns the default"
+
+expect_success "16. an arbitrary configName is allowed when explicitly bound" "$PRE"'
+  let r = mkM {
+    host = "alpha"; conditionNames = cn;
+    configNames.myconfig = { bind = "mulix.modules"; };
+    hostDefs.alpha = H { home = { myconfig, ... }: { out.user = myconfig.constants.username; }; };
+    modules = [ (m.module { name = "constants"; options.username = m.mulibApi.str "alice"; }) ];
+  };
+  in (evalT r "home").user == "alice"
+'
+
+expect_success "16b. arbitrary user-chosen bound names are supported" "$PRE"'
+  let r = mkM {
+    host = "h"; conditionNames = cn;
+    configNames.hostconf = { bind = "mulix.modules"; };
+    modules = [ (m.module { name = "constants"; options.username = m.mulibApi.str "alice"; }) ];
+  };
+  in builtins.elem "hostconf" (builtins.attrNames r.configGraph)
 '
 
 # ===========================================================================
@@ -440,7 +483,7 @@ expect_success "19c. overlayModule sets nixpkgs.overlays" "$PRE"'
 '
 
 expect_failure "19d. duplicate overlay names are rejected" "$PRE"'
-  builtins.deepSeq (m.mkMulix { host = "h"; conditionNames = cn; hostDefs.h = m.host { name = "h"; }; overlays = [
+  builtins.deepSeq (mkM { host = "h"; conditionNames = cn; hostDefs.h = m.host { name = "h"; }; overlays = [
     (m.overlay { name = "x"; overlay = f: p: { }; }) (m.overlay { name = "x"; overlay = f: p: { }; }) ]; }).overlays true
 ' "duplicate overlay name(s): x"
 
@@ -449,7 +492,7 @@ expect_failure "19e. an overlay must be a function" "$PRE"'
 ' "must be a function"
 
 expect_failure "19f. a raw attrset is not an overlay" "$PRE"'
-  builtins.deepSeq (m.mkMulix { host = "h"; conditionNames = cn; hostDefs.h = m.host { name = "h"; };
+  builtins.deepSeq (mkM { host = "h"; conditionNames = cn; hostDefs.h = m.host { name = "h"; };
     overlays = [ { name = "x"; overlay = f: p: { }; } ]; }).overlays true
 ' "expected a mulib.overlay descriptor"
 
@@ -457,13 +500,32 @@ expect_failure "19f. a raw attrset is not an overlay" "$PRE"'
 # Option shorthands, feature conditions
 # ===========================================================================
 
-expect_success "20. new shorthands build the expected options" "$PRE"'
+expect_success "20. all common option shorthands build the expected options" "$PRE"'
   let a = m.mulibApi;
       ev = lib.evalModules { modules = [ { options = {
-        l = a.listOf a.type.str [ "x" ]; at = a.attrs { k = 1; }; p = a.path ./lib; n = a.nullOr a.type.int null;
+        s = a.str "text";
+        i = a.int 3;
+        f = a.float 1.5;
+        l = a.lines "x\ny";
+        at = a.attrs { k = 1; };
+        p = a.path ./lib;
+        n = a.nullOr a.type.int null;
+        e = a.enum [ "a" "b" ] "b";
+        o = a.oneOf [ a.type.str a.type.int ] "x";
+        ao = a.attrsOf a.type.str { k = "v"; };
+        el = a.either a.type.str a.type.int 7;
       }; } ]; };
-  in ev.config.l == [ "x" ] && ev.config.at == { k = 1; } && ev.config.n == null
+  in ev.config.s == "text" && ev.config.i == 3 && ev.config.f == 1.5
+     && ev.config.l == "x\ny" && ev.config.at == { k = 1; } && ev.config.n == null
+     && ev.config.e == "b" && ev.config.o == "x" && ev.config.ao == { k = "v"; } && ev.config.el == 7
 '
+
+expect_success "20a. null means no default for default-bearing shorthand helpers" "$PRE"'
+  let a = m.mulibApi;
+      ev = lib.evalModules { modules = [ { options = { e = a.enum [ "a" "b" ] null; s = a.str null; }; } ]; };
+  in !(ev.options.e ? default) && !(ev.options.s ? default)
+'
+
 
 expect_success "20b. existing shorthands are unchanged" "$PRE"'
   let a = m.mulibApi; ev = lib.evalModules { modules = [ { options = {
@@ -477,7 +539,7 @@ expect_success "21. gui AND (niri OR hyprland) is evaluated as documented" "$PRE
 '
 
 expect_success "21b. ... and is false when gui is missing" "$PRE"'
-  let r = m.mkMulix { host = "h"; conditionNames = cn; hostDefs.h = m.host { name = "h"; feat = [ "niri" ]; };
+  let r = mkM { host = "h"; conditionNames = cn; hostDefs.h = m.host { name = "h"; feat = [ "niri" ]; };
     modules = [ ({ host, mulib, ... }: mulib.module { name = "graphics";
       options.enable = [ host.feat.gui [ host.feat.niri host.feat.hyprland ] ]; os = { out.graphics = true; }; }) ]; };
   in !((evalT r "os") ? graphics)

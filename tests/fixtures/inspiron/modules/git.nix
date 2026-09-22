@@ -1,9 +1,9 @@
-# Reads another module's state through `myconfig`; no configName is declared.
+# Reads the complete module-options view through the explicitly bound `hostconf` configName.
 { mulib, ... }:
 mulib.module {
   name = "git";
   options.enable = mulib.bool.true;
-  home = { myconfig, ... }: {
-    out.gitUser = myconfig.constants.username;
+  home = { hostconf, ... }: {
+    out.gitUser = hostconf.constants.username;
   };
 }

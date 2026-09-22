@@ -1,21 +1,13 @@
 {lib}: rec {
   /*
-  module source の入力形式は2通りをサポートする:
-
-    1. 明示的なリスト: `mulib.module` で明示的に包んだモジュール定義のリスト。
-       この場合、与えられた順序をそのまま deterministic order とする。
-
-    2. ディレクトリパス: `lib.filesystem` 相当で `*.nix` を列挙し、
-       ファイル名でソートする (builtins.readDir は既に attrname で
-       ソートされているため、追加ソートは冗長だが明示しておく)。
+  `paths` discovery walks `.nix` files recursively and hands their evaluated
+  descriptor to the caller for classification. A file only participates when
+  its result is marked by `mulib.module`, `mulib.host`, or `mulib.overlay`.
   */
-  collectFromList = moduleDefs:
-    lib.imap0 (index: def: {inherit index def; source = null; path = null; label = null;}) moduleDefs;
-
   # ---- shared file discovery -------------------------------------------
   #
-  # Every directory walk in mulix goes through `listNixFiles`, so `modules =
-  # ./dir` and `paths = [ ./dir ]` order and label files the same way.
+  # Every directory walk in mulix goes through `listNixFiles`; path entries are
+  # later classified as module/host/overlay descriptors.
   #
   #   recursive    descend into subdirectories
   #   defaultFirst inside a directory, `default.nix` comes before its siblings
@@ -30,9 +22,25 @@
   #   label   = "<root dir name>/<relative path>"   e.g. "hosts/alpha/tpm2.nix"
   #   dirName = first subdirectory below the root ("alpha"), or null for a file
   #             sitting directly in the root
-  # (`readDir` of the parent rather than `readFileType`: the latter needs Nix >= 2.14.)
+  # Prefer `readFileType` (Nix >= 2.14): it stats `path` directly, so its
+  # result is always correct and its cost does not depend on the size of the
+  # containing directory.  Older Nix falls back to `readDir` of the parent
+  # and looking the entry up by name.
+  #
+  # The readDir fallback is unsound for paths whose containing directory is
+  # huge and/or still gaining entries during the same evaluation, e.g. a
+  # `builtins.toFile` result placed directly under /nix/store: every such
+  # path forces a full listing of /nix/store, and any such path a `toFile`
+  # call adds *after* an earlier listing was taken is not guaranteed to show
+  # up in it, so `entryType` can throw "attribute missing" for a path that
+  # plainly exists. This also makes classifying N such paths cost
+  # O(N * storeSize) instead of O(N), i.e. superlinear as the store grows
+  # over the course of one evaluation. `readFileType` sidesteps both
+  # problems and is used whenever it's available.
   entryType = path:
-    (builtins.readDir (dirOf path)).${baseNameOf (toString path)};
+    if builtins ? readFileType
+    then builtins.readFileType path
+    else (builtins.readDir (dirOf path)).${baseNameOf (toString path)};
 
   listNixFiles = {
     root,
@@ -74,17 +82,6 @@
       (lib.concatMap (d: walk (dir + "/${d}") "${rel}${d}/") dirs);
   in
     walk root "";
-
-  # `modules = ./dir` (legacy): flat, alphabetical, every file is a module.
-  collectFromDir = dir:
-    lib.imap0
-    (index: e: {
-      inherit index;
-      inherit (e) path label;
-      def = import e.path;
-      source = toString e.path;
-    })
-    (listNixFiles {root = dir; recursive = false; defaultFirst = false;});
 
   # `paths = [ ./hosts ./modules ./overlays ]`: recursive discovery.  A path may
   # also name a single .nix file.  Entries are classified later (module / host /
