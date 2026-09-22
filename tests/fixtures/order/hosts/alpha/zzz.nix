@@ -1,1 +1,5 @@
-{ mulib, ... }: mulib.host { name = "alpha"; feat = [ "amd" ]; }
+{mulib, ...}:
+mulib.host {
+  name = "alpha";
+  feat = ["amd"];
+}

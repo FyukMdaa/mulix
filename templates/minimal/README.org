@@ -1,0 +1,40 @@
+#+TITLE: mulix minimal template
+
+* まず変更する場所
+
+1. =hosts/your_hostname/default.nix= の =name=、=system=、usernameなど
+2. =conditionNames.nix= のcondition catalog
+3. =configNames.nix= のmodule間データチャネル
+4. =flake.nix= のHome Manager user
+
+* 構成
+
+#+begin_src text
+.
+├── flake.nix
+├── conditionNames.nix
+├── configNames.nix
+├── hosts/
+│   └── your_hostname/
+│       └── default.nix
+├── modules/
+│   ├── system.nix
+│   ├── tools.nix
+│   └── welcome.nix
+└── overlays/
+    └── packages.nix
+#+end_src
+
+* このtemplateで見られるmulixの機能
+
+- module collection
+- host fragment
+- host condition
+- =send.force.myconfig=
+- configName receiver
+- ordered configName
+- overlay
+- NixOS + Home Manager integration
+
+=packageNames= は =tools= が送信し、=welcome= が受信します。
+=tools.enable= はhostの =send.force.myconfig= で有効化されます。

@@ -13,16 +13,18 @@
         field: ${fieldName}
         value does not satisfy the declared Nix type
       ''
-    else
-      let
-        merged = lib.modules.mergeDefinitions
-          ["mulix" configName fieldName]
-          type
-          [{
+    else let
+      merged =
+        lib.modules.mergeDefinitions
+        ["mulix" configName fieldName]
+        type
+        [
+          {
             file = "<mulix ${configName}.${fieldName}>";
             inherit value;
-          }];
-      in
+          }
+        ];
+    in
       # Use Nix's canonical option-definition validation path.  For V2 types,
       # mergeDefinitions checks `headError` produced by the type's merge.v2
       # implementation, which is where attrsOf/listOf report nested failures.
@@ -44,19 +46,22 @@
       strategy =
         if isModulesBinding
         then entry.merge or "single"
-        else entry.merge or (throw ''
-          mulix: invalid configName registry entry '${configName}'
-          missing required field: merge
-        '');
+        else
+          entry.merge or (throw ''
+            mulix: invalid configName registry entry '${configName}'
+            missing required field: merge
+          '');
       ownership = entry.ownership or "path";
       normalized =
         if isModulesBinding
-        then entry // {
-          type = lib.types.attrs;
-          merge = strategy;
-          default = {};
-          bind = "mulix.modules";
-        }
+        then
+          entry
+          // {
+            type = lib.types.attrs;
+            merge = strategy;
+            default = {};
+            bind = "mulix.modules";
+          }
         else entry;
       type = normalized.type or null;
       hasTypeCheck = type != null && (type ? check);
@@ -106,55 +111,60 @@
         else true;
     in
       builtins.seq bindingCheck
-      (if !(normalized ? type)
-       then throw ''
-         mulix: invalid configName registry entry '${configName}'
-         missing required field: type
-       ''
-       else if !hasTypeCheck
-       then throw ''
-         mulix: invalid configName registry entry '${configName}'
-         field 'type' is not a Nix option type with a check function
-       ''
-       else if !(elem strategy mergeStrategies)
-       then throw ''
-         mulix: invalid configName registry entry '${configName}'
-         invalid merge strategy '${strategy}',
-         expected one of: ${builtins.concatStringsSep ", " mergeStrategies}
-       ''
-       else if ownership != "path"
-       then throw ''
-         mulix: invalid configName registry entry '${configName}'
-         invalid ownership '${ownership}', expected: path
-       ''
-       else if strategy == "ordered" && (normalized ? default) && !(isList normalized.default)
-       then throw ''
-         mulix: invalid configName registry entry '${configName}'
-         merge strategy 'ordered' requires default to be a list
-       ''
-       else
-         builtins.seq orderedTypeCheck
-         (builtins.seq defaultCheck
-           (normalized // {inherit ownership;})));
+      (
+        if !(normalized ? type)
+        then
+          throw ''
+            mulix: invalid configName registry entry '${configName}'
+            missing required field: type
+          ''
+        else if !hasTypeCheck
+        then
+          throw ''
+            mulix: invalid configName registry entry '${configName}'
+            field 'type' is not a Nix option type with a check function
+          ''
+        else if !(elem strategy mergeStrategies)
+        then
+          throw ''
+            mulix: invalid configName registry entry '${configName}'
+            invalid merge strategy '${strategy}',
+            expected one of: ${builtins.concatStringsSep ", " mergeStrategies}
+          ''
+        else if ownership != "path"
+        then
+          throw ''
+            mulix: invalid configName registry entry '${configName}'
+            invalid ownership '${ownership}', expected: path
+          ''
+        else if strategy == "ordered" && (normalized ? default) && !(isList normalized.default)
+        then
+          throw ''
+            mulix: invalid configName registry entry '${configName}'
+            merge strategy 'ordered' requires default to be a list
+          ''
+        else
+          builtins.seq orderedTypeCheck
+          (builtins.seq defaultCheck
+            (normalized // {inherit ownership;}))
+      );
 
   # reservedNames is intentionally opt-in here: the graph library can validate
   # a registry independently, while mkMulix supplies the actual public
   # function-argument namespace and turns collisions into construction-time
   # errors.
-  validateRegistryWithReserved = registry: { reservedNames ? [] }:
-    let
-      collisions = builtins.filter (name: elem name reservedNames) (attrNames registry);
-    in
-      if collisions != []
-      then
-        throw ''
-          mulix: configName registry contains reserved function argument name(s):
-          ${builtins.concatStringsSep ", " collisions}
-          These names are reserved by mulix and cannot be used as configName
-          because receiver function arguments would shadow mulix built-ins.
-        ''
-      else
-        lib.mapAttrs validateRegistryEntry registry;
+  validateRegistryWithReserved = registry: {reservedNames ? []}: let
+    collisions = builtins.filter (name: elem name reservedNames) (attrNames registry);
+  in
+    if collisions != []
+    then
+      throw ''
+        mulix: configName registry contains reserved function argument name(s):
+        ${builtins.concatStringsSep ", " collisions}
+        These names are reserved by mulix and cannot be used as configName
+        because receiver function arguments would shadow mulix built-ins.
+      ''
+    else lib.mapAttrs validateRegistryEntry registry;
 
   validateRegistry = registry: validateRegistryWithReserved registry {};
 
@@ -212,14 +222,24 @@
     sorted = builtins.sort (a: b: a.rank < b.rank) entries;
     summarize = keyed: let
       best = builtins.listToAttrs keyed;
-      other = builtins.listToAttrs
+      other =
+        builtins.listToAttrs
         (builtins.filter (kv: kv.value.module != best.${kv.name}.module) keyed);
-    in { inherit best other; };
+    in {inherit best other;};
   in {
-    exact = summarize (map (e: { name = pathKey e.path; value = e; }) sorted);
-    below = summarize
+    exact = summarize (map (e: {
+        name = pathKey e.path;
+        value = e;
+      })
+      sorted);
+    below =
+      summarize
       (lib.concatMap
-        (e: map (k: { name = k; value = e; }) (properPrefixKeys e.path))
+        (e:
+          map (k: {
+            name = k;
+            value = e;
+          }) (properPrefixKeys e.path))
         sorted);
   };
 
@@ -237,11 +257,20 @@
     n = builtins.length values;
     lastNonAttr =
       lib.foldl'
-      (acc: i: if isAttrs (builtins.elemAt values i) then acc else i)
+      (acc: i:
+        if isAttrs (builtins.elemAt values i)
+        then acc
+        else i)
       (-1)
       (lib.range 0 (n - 1));
     run = lib.drop (lastNonAttr + 1) values;
-    entries = lib.concatMap (v: lib.mapAttrsToList (k: x: {name = k; value = x;}) v) run;
+    entries = lib.concatMap (v:
+      lib.mapAttrsToList (k: x: {
+        name = k;
+        value = x;
+      })
+      v)
+    run;
     grouped = builtins.groupBy (e: e.name) entries;
   in
     if n == 0
@@ -262,17 +291,21 @@
     pick = summary: k: let
       f = summary.best.${k} or null;
     in
-      if f == null then null
-      else if f.module != module then f
+      if f == null
+      then null
+      else if f.module != module
+      then f
       else summary.other.${k} or null;
     candidates =
-      [ (pick index.exact (pathKey path)) (pick index.below (pathKey path)) ]
+      [(pick index.exact (pathKey path)) (pick index.below (pathKey path))]
       ++ map (k: pick index.exact k) (properPrefixKeys path);
   in
     lib.foldl'
     (acc: c:
-      if c == null then acc
-      else if acc == null || c.rank < acc.rank then c
+      if c == null
+      then acc
+      else if acc == null || c.rank < acc.rank
+      then c
       else acc)
     null
     candidates;
@@ -318,8 +351,11 @@
       ''
     else true;
 
-  formatWriter = w:
-    "${w.module}${if (w.source or null) == null then "" else " [source: ${w.source}]"}";
+  formatWriter = w: "${w.module}${
+    if (w.source or null) == null
+    then ""
+    else " [source: ${w.source}]"
+  }";
 
   # `mkOverride` normally appears at the definition boundary, where
   # lib.modules.filterOverrides can process it.  send values can also contain
@@ -334,59 +370,78 @@
   # library does not become version-fragile merely by evaluating a send.
   defaultOverridePriority = lib.modules.defaultOverridePriority or 100;
 
-  collectLeafWrites = ctx: prefix: value: inheritedPriority:
-    let
-      propertyType = if isAttrs value then value._type or null else null;
-    in
-      if propertyType == "override"
-      # An override replaces the priority for everything below it.  (It must
-      # not be `min`-ed with the inherited priority: the inherited default is
-      # 100, which would turn mkDefault (1000) into a normal definition.)
-      then collectLeafWrites ctx prefix value.content value.priority
-      else if propertyType == "if"
-      then if value.condition
-        then collectLeafWrites ctx prefix value.content inheritedPriority
-        else []
-      else if propertyType == "merge"
-      then lib.concatMap (v: collectLeafWrites ctx prefix v inheritedPriority) value.contents
-      else if propertyType == "order"
+  collectLeafWrites = ctx: prefix: value: inheritedPriority: let
+    propertyType =
+      if isAttrs value
+      then value._type or null
+      else null;
+  in
+    if propertyType == "override"
+    # An override replaces the priority for everything below it.  (It must
+    # not be `min`-ed with the inherited priority: the inherited default is
+    # 100, which would turn mkDefault (1000) into a normal definition.)
+    then collectLeafWrites ctx prefix value.content value.priority
+    else if propertyType == "if"
+    then
+      if value.condition
       then collectLeafWrites ctx prefix value.content inheritedPriority
-      else if isAttrs value && !(isOpaqueValue value)
-      then
-        let
-          entries = builtins.seq (checkSendDepth ctx prefix)
-            (lib.mapAttrsToList
-              (k: v: collectLeafWrites ctx (prefix ++ [k]) v inheritedPriority)
-              value);
-        in
-          if entries == []
-          # An empty attrset defines nothing: it is kept in the result (so
-          # `foo = {}` stays `foo = {}`) but it owns no path -- collectPathsIn
-          # gives it none -- and therefore must not override other modules'
-          # values either.  `inert` marks such a write.
-          then [{path = prefix; inherit value; priority = inheritedPriority; inert = true;}]
-          else lib.concatLists entries
-      else
-        [{path = prefix; inherit value; priority = inheritedPriority;}];
+      else []
+    else if propertyType == "merge"
+    then lib.concatMap (v: collectLeafWrites ctx prefix v inheritedPriority) value.contents
+    else if propertyType == "order"
+    then collectLeafWrites ctx prefix value.content inheritedPriority
+    else if isAttrs value && !(isOpaqueValue value)
+    then let
+      entries =
+        builtins.seq (checkSendDepth ctx prefix)
+        (lib.mapAttrsToList
+          (k: v: collectLeafWrites ctx (prefix ++ [k]) v inheritedPriority)
+          value);
+    in
+      if entries == []
+      # An empty attrset defines nothing: it is kept in the result (so
+      # `foo = {}` stays `foo = {}`) but it owns no path -- collectPathsIn
+      # gives it none -- and therefore must not override other modules'
+      # values either.  `inert` marks such a write.
+      then [
+        {
+          path = prefix;
+          inherit value;
+          priority = inheritedPriority;
+          inert = true;
+        }
+      ]
+      else lib.concatLists entries
+    else [
+      {
+        path = prefix;
+        inherit value;
+        priority = inheritedPriority;
+      }
+    ];
 
   applyNestedLeafOverrides = configName: contributions: let
     numbered = lib.imap0 (cid: contribution: contribution // {_mulixContributionId = cid;}) contributions;
 
-    writes = lib.concatMap
+    writes =
+      lib.concatMap
       (contribution:
         map
-          (write: write // {
+        (write:
+          write
+          // {
             contributionId = contribution._mulixContributionId;
             module = contribution.module;
           })
-          (collectLeafWrites "configName '${configName}' (module '${contribution.module}')" [] contribution.value defaultOverridePriority))
+        (collectLeafWrites "configName '${configName}' (module '${contribution.module}')" [] contribution.value defaultOverridePriority))
       (builtins.filter (c: isAttrs c.value) numbered);
 
     # A write is dominated when a write of a different module, on an
     # overlapping path, has a strictly smaller priority number.
     # Inert writes (empty attrsets) never dominate anything, so they are not in
     # the index; they can still be dominated by a stronger write below.
-    priorityIndex = buildOverlapIndex
+    priorityIndex =
+      buildOverlapIndex
       (map (w: w // {rank = w.priority;})
         (builtins.filter (w: !(w.inert or false)) writes));
 
@@ -410,7 +465,8 @@
       else
         (builtins.removeAttrs contribution ["_mulixContributionId"])
         // {
-          value = recursiveUpdateMany
+          value =
+            recursiveUpdateMany
             (map (write: lib.setAttrByPath write.path write.value) selected);
         };
   in
@@ -434,23 +490,37 @@
   # withPaths: [{ module; paths; ... }] in resolution order.
   findSingleConflicts = withPaths: let
     numbered = lib.imap0 (pos: c: {inherit pos c;}) withPaths;
-    index = buildOverlapIndex
+    index =
+      buildOverlapIndex
       (lib.concatMap
-        (n: map (p: {path = p; module = n.c.module; rank = n.pos;}) n.c.paths)
+        (n:
+          map (p: {
+            path = p;
+            module = n.c.module;
+            rank = n.pos;
+          })
+          n.c.paths)
         numbered);
     conflictFor = n: let
       found =
         lib.foldl'
         (acc: hit:
-          if hit == null then acc
-          else if acc == null || hit.rank < acc.rank then hit
+          if hit == null
+          then acc
+          else if acc == null || hit.rank < acc.rank
+          then hit
           else acc)
         null
         (map (p: overlapMinOther index p n.c.module) n.c.paths);
     in
       if found == null || found.rank >= n.pos
       then []
-      else [{ writer = n.c; other = builtins.elemAt withPaths found.rank; }];
+      else [
+        {
+          writer = n.c;
+          other = builtins.elemAt withPaths found.rank;
+        }
+      ];
   in
     lib.concatMap conflictFor numbered;
 
@@ -470,7 +540,7 @@
         # (e.g. A.foo versus B.foo.bar).
         paths = collectPathsIn "configName '${configName}' (module '${c.module}')" [] c.value;
       })
-      sorted;
+    sorted;
 
     conflicts = findSingleConflicts withPaths;
 
@@ -537,7 +607,13 @@
     if !(lib.all isAttrs values)
     then namespacedLeafClash configName path
     else let
-      entries = lib.concatMap (v: lib.mapAttrsToList (k: x: {name = k; value = x;}) v) values;
+      entries = lib.concatMap (v:
+        lib.mapAttrsToList (k: x: {
+          name = k;
+          value = x;
+        })
+        v)
+      values;
       grouped = builtins.groupBy (e: e.name) entries;
     in
       builtins.mapAttrs
@@ -558,7 +634,14 @@
         (lib.concatMap
           (c:
             map
-            (p: {key = pathKey p; writer = {module = c.module; source = c.source or null; path = p;};})
+            (p: {
+              key = pathKey p;
+              writer = {
+                module = c.module;
+                source = c.source or null;
+                path = p;
+              };
+            })
             (collectPathsIn "configName '${configName}' (module '${c.module}')" [] c.value))
           sorted));
   in
@@ -567,22 +650,25 @@
   resolveNamespaced = configName: contributions: let
     sorted = lib.sort (a: b: a.index < b.index) contributions;
     conflicts = findNamespacedConflicts configName sorted;
-    conflictText = lib.concatStringsSep "\n" (lib.mapAttrsToList (_: writers: let p = builtins.head writers; in ''
+    conflictText = lib.concatStringsSep "\n" (lib.mapAttrsToList (_: writers: let
+      p = builtins.head writers;
+    in ''
       path: ${formatPath p.path}
       writers:
-        ${lib.concatStringsSep "\n  " (map (w: "- " + formatWriter w) writers)}'') conflicts);
+        ${lib.concatStringsSep "\n  " (map (w: "- " + formatWriter w) writers)}'')
+    conflicts);
   in
     if conflicts != {}
-    then throw ''
-      mulix: ownership conflict
-      configName: ${configName}
-      strategy: namespaced
-      ${conflictText}
-      (There are multiple writers on the same leaf.
-       Namespaced strategies do not allow overwriting on a leaf by a later writer.)
-    ''
-    else
-      mergeNamespacedMany configName [] (map (c: c.value) sorted);
+    then
+      throw ''
+        mulix: ownership conflict
+        configName: ${configName}
+        strategy: namespaced
+        ${conflictText}
+        (There are multiple writers on the same leaf.
+         Namespaced strategies do not allow overwriting on a leaf by a later writer.)
+      ''
+    else mergeNamespacedMany configName [] (map (c: c.value) sorted);
 
   # ---- ordered strategy ----
 
@@ -628,7 +714,10 @@
 
     isModulesBinding = (entry.bind or null) == "mulix.modules";
     hasBoundBase = isModulesBinding && builtins.hasAttr configName baseValues;
-    boundBase = if hasBoundBase then baseValues.${configName} else {};
+    boundBase =
+      if hasBoundBase
+      then baseValues.${configName}
+      else {};
 
     sentValue =
       if contributions != []
@@ -652,7 +741,6 @@
         then lib.recursiveUpdate boundBase sentValue
         else sentValue
       else sentValue;
-
   in let
     # force 適用 (force は最終値を override する)。
     # force が attrset の場合は path 単位の deep merge、

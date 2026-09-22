@@ -11,35 +11,42 @@
   };
 
   conditionValue = context: value:
-    if builtins.isBool value then value
+    if builtins.isBool value
+    then value
     else if builtins.isList value
     then
       if builtins.any builtins.isList value
-      then builtins.all
-        (v: if builtins.isList v
-            then builtins.any (conditionValue context) v
-            else conditionValue context v)
+      then
+        builtins.all
+        (v:
+          if builtins.isList v
+          then builtins.any (conditionValue context) v
+          else conditionValue context v)
         value
       else builtins.all (conditionValue context) value
-    else throw ''
-      mulix: invalid enable condition in ${context}
-      expected a bool or condition list, got: ${builtins.typeOf value}
-      condition lists use top-level AND and nested lists as OR groups
-    '';
+    else
+      throw ''
+        mulix: invalid enable condition in ${context}
+        expected a bool or condition list, got: ${builtins.typeOf value}
+        condition lists use top-level AND and nested lists as OR groups
+      '';
 
   normalizeEnableSpec = context: value:
     if builtins.isList value
-    then if value == []
-      then throw ''
-        mulix: invalid enable condition in ${context}
-        an empty condition list is ambiguous and is not allowed;
-        provide at least one condition
-      ''
-      else lib.mkOption {
-        type = lib.types.bool;
-        default = conditionValue context value;
-        description = "Whether this mulix module is enabled";
-      }
+    then
+      if value == []
+      then
+        throw ''
+          mulix: invalid enable condition in ${context}
+          an empty condition list is ambiguous and is not allowed;
+          provide at least one condition
+        ''
+      else
+        lib.mkOption {
+          type = lib.types.bool;
+          default = conditionValue context value;
+          description = "Whether this mulix module is enabled";
+        }
     else value;
 
   ensureEnableOption = options:
@@ -51,7 +58,8 @@
   # Standalone normalized records do not, so accept either representation.
   evalDefinition = mod: specialArgs:
     if mod ? definition
-    then if lib.isFunction mod.definition
+    then
+      if lib.isFunction mod.definition
       then mod.definition specialArgs
       else mod.definition
     else mod;
@@ -77,82 +85,116 @@
     pkgs = config._module.args.pkgs or (specialArgsBase.pkgs or null);
   };
 
-  optionsFragment = {mod, specialArgsBase, configGraphForConfig, configGraphForOptions ? configGraphForConfig}:
-    args @ {config, lib, ...}: let
-      graph = configGraphForOptions config;
-      evalArgs =
-        specialArgsBase
-        // moduleSystemPkgs config specialArgsBase
-        // args
-        // graph
-        // {
-          opt = optOf mod.name config;
-        };
-      evaluated = evalDefinition mod evalArgs;
-      raw = evaluated.options or {};
-      evaluatedOptions = if lib.isFunction raw then raw evalArgs else raw;
-
-      normalizedEnable =
-        if evaluatedOptions ? enable
-        then normalizeEnableSpec "options.enable" evaluatedOptions.enable
-        else defaultEnableOption;
-    in
-      builtins.seq normalizedEnable {
-        options.mulix.modules.${mod.name} =
-          evaluatedOptions // { enable = normalizedEnable; };
+  optionsFragment = {
+    mod,
+    specialArgsBase,
+    configGraphForConfig,
+    configGraphForOptions ? configGraphForConfig,
+  }: args @ {
+    config,
+    lib,
+    ...
+  }: let
+    graph = configGraphForOptions config;
+    evalArgs =
+      specialArgsBase
+      // moduleSystemPkgs config specialArgsBase
+      // args
+      // graph
+      // {
+        opt = optOf mod.name config;
       };
+    evaluated = evalDefinition mod evalArgs;
+    raw = evaluated.options or {};
+    evaluatedOptions =
+      if lib.isFunction raw
+      then raw evalArgs
+      else raw;
 
-  mkAlwaysEntry = {mod, target, specialArgsBase, configGraphForConfig}:
-    args @ {config, lib, ...}: let
-      # `args` は NixOS module system が供給する全引数 (config, lib, pkgs,
-      # modulesPath, options, _module, specialArgs 経由の _module.args, ...)
-      # を含む。`specialArgsBase` には mulix が供給する引数 (host, mulib,
-      # configNames, ...) が入る。
-      # `args` を後で `//` することで、NixOS module system 由来の modulesPath 等
-      # が specialArgsBase の stub を上書きする。
-      common =
-        specialArgsBase
-        // moduleSystemPkgs config specialArgsBase
-        // args
-        // configGraphForConfig config;
-      evaluated = evalDefinition mod common;
-      frag = evaluated.always.${target} or {};
-    in
-      if isEmptyStatic frag then {}
-      else if lib.isFunction frag
-      then frag (common // {opt = optOf mod.name config;})
-      else frag;
+    normalizedEnable =
+      if evaluatedOptions ? enable
+      then normalizeEnableSpec "options.enable" evaluatedOptions.enable
+      else defaultEnableOption;
+  in
+    builtins.seq normalizedEnable {
+      options.mulix.modules.${mod.name} =
+        evaluatedOptions // {enable = normalizedEnable;};
+    };
 
-  mkConditionalEntry = {mod, target, specialArgsBase, configGraphForConfig}:
-    args @ {config, lib, ...}: let
-      common =
-        specialArgsBase
-        // moduleSystemPkgs config specialArgsBase
-        // args
-        // configGraphForConfig config;
-      evaluated = evalDefinition mod common;
-      frag = evaluated.${target} or {};
-    in
-      if isEmptyStatic frag then {}
-      else if lib.isFunction frag
-      then let
-        result = frag (common // {opt = optOf mod.name config;});
-      in {config = lib.mkIf (enableOf mod.name config) result;}
-      else {config = lib.mkIf (enableOf mod.name config) frag;};
+  mkAlwaysEntry = {
+    mod,
+    target,
+    specialArgsBase,
+    configGraphForConfig,
+  }: args @ {
+    config,
+    lib,
+    ...
+  }: let
+    # `args` は NixOS module system が供給する全引数 (config, lib, pkgs,
+    # modulesPath, options, _module, specialArgs 経由の _module.args, ...)
+    # を含む。`specialArgsBase` には mulix が供給する引数 (host, mulib,
+    # configNames, ...) が入る。
+    # `args` を後で `//` することで、NixOS module system 由来の modulesPath 等
+    # が specialArgsBase の stub を上書きする。
+    common =
+      specialArgsBase
+      // moduleSystemPkgs config specialArgsBase
+      // args
+      // configGraphForConfig config;
+    evaluated = evalDefinition mod common;
+    frag = evaluated.always.${target} or {};
+  in
+    if isEmptyStatic frag
+    then {}
+    else if lib.isFunction frag
+    then frag (common // {opt = optOf mod.name config;})
+    else frag;
 
-  mkModuleFragments = {mod, target, specialArgsBase, configGraphForConfig}:
-    [
-      (mkAlwaysEntry {inherit mod target specialArgsBase configGraphForConfig;})
-      (mkConditionalEntry {inherit mod target specialArgsBase configGraphForConfig;})
-    ];
+  mkConditionalEntry = {
+    mod,
+    target,
+    specialArgsBase,
+    configGraphForConfig,
+  }: args @ {
+    config,
+    lib,
+    ...
+  }: let
+    common =
+      specialArgsBase
+      // moduleSystemPkgs config specialArgsBase
+      // args
+      // configGraphForConfig config;
+    evaluated = evalDefinition mod common;
+    frag = evaluated.${target} or {};
+  in
+    if isEmptyStatic frag
+    then {}
+    else if lib.isFunction frag
+    then let
+      result = frag (common // {opt = optOf mod.name config;});
+    in {config = lib.mkIf (enableOf mod.name config) result;}
+    else {config = lib.mkIf (enableOf mod.name config) frag;};
+
+  mkModuleFragments = {
+    mod,
+    target,
+    specialArgsBase,
+    configGraphForConfig,
+  }: [
+    (mkAlwaysEntry {inherit mod target specialArgsBase configGraphForConfig;})
+    (mkConditionalEntry {inherit mod target specialArgsBase configGraphForConfig;})
+  ];
 
   checkTarget = context: target:
     if !(builtins.elem target targets)
-    then throw ''
-      mulix: invalid target '${target}'
-      in module: ${context}
-      allowed targets: ${builtins.concatStringsSep ", " targets}
-    ''
+    then
+      throw ''
+        mulix: invalid target '${target}'
+        in module: ${context}
+        allowed targets: ${builtins.concatStringsSep ", " targets}
+      ''
     else target;
 
   /*
@@ -169,7 +211,12 @@
   `supplied` lists the names mulix injects; every other requested name is left
   to the module system.
   */
-  mkHostFragmentModule = {frag, supplied, specialArgsBase, configGraphForConfig}:
+  mkHostFragmentModule = {
+    frag,
+    supplied,
+    specialArgsBase,
+    configGraphForConfig,
+  }:
     if !lib.isFunction frag
     then frag
     else let
@@ -183,16 +230,31 @@
         # ... keep coming from the module system.
         injected =
           builtins.intersectAttrs suppliedSet
-          (specialArgsBase
+          (
+            specialArgsBase
             // configGraphForConfig config
-            );
+          );
       in
         frag (builtins.intersectAttrs requested (args // injected)))
-      ({config = false; lib = false;} // builtins.removeAttrs requested supplied);
+      ({
+          config = false;
+          lib = false;
+        }
+        // builtins.removeAttrs requested supplied);
 
-  mkHostModules = {hostConfig, target, supplied, specialArgsBase, configGraphForConfig}:
+  mkHostModules = {
+    hostConfig,
+    target,
+    supplied,
+    specialArgsBase,
+    configGraphForConfig,
+  }:
     map
-    (f: mkHostFragmentModule {inherit (f) frag; inherit supplied specialArgsBase configGraphForConfig;})
+    (f:
+      mkHostFragmentModule {
+        inherit (f) frag;
+        inherit supplied specialArgsBase configGraphForConfig;
+      })
     hostConfig.config.${target};
 
   mkTargetModuleList = {
@@ -203,19 +265,32 @@
     configGraphForOptions ? configGraphForConfig,
     hostConfig ? null,
     supplied ? [],
-  }:
-    let
-      _targetCheck = checkTarget "mkTargetModuleList" target;
-      optionsFrags = map (mod: optionsFragment {inherit mod specialArgsBase configGraphForConfig configGraphForOptions;}) modules;
-      bodyFrags = lib.concatMap
-        (mod: mkModuleFragments {inherit mod target specialArgsBase configGraphForConfig;}) modules;
-      hostFrags =
-        if hostConfig == null
-        then []
-        else mkHostModules {inherit hostConfig target supplied specialArgsBase configGraphForConfig;};
-    in builtins.seq _targetCheck (optionsFrags ++ bodyFrags ++ hostFrags);
+  }: let
+    _targetCheck = checkTarget "mkTargetModuleList" target;
+    optionsFrags = map (mod: optionsFragment {inherit mod specialArgsBase configGraphForConfig configGraphForOptions;}) modules;
+    bodyFrags =
+      lib.concatMap
+      (mod: mkModuleFragments {inherit mod target specialArgsBase configGraphForConfig;})
+      modules;
+    hostFrags =
+      if hostConfig == null
+      then []
+      else mkHostModules {inherit hostConfig target supplied specialArgsBase configGraphForConfig;};
+  in
+    builtins.seq _targetCheck (optionsFrags ++ bodyFrags ++ hostFrags);
 in {
-  inherit targets checkTarget optionsFragment mkAlwaysEntry mkConditionalEntry
-    mkModuleFragments mkTargetModuleList mkHostModules mkHostFragmentModule
-    conditionValue normalizeEnableSpec optOf;
+  inherit
+    targets
+    checkTarget
+    optionsFragment
+    mkAlwaysEntry
+    mkConditionalEntry
+    mkModuleFragments
+    mkTargetModuleList
+    mkHostModules
+    mkHostFragmentModule
+    conditionValue
+    normalizeEnableSpec
+    optOf
+    ;
 }

@@ -18,5 +18,10 @@
     ];
   in {
     lib = import ./lib;
+
+    templates.minimal = {
+      path = ./templates/minimal;
+      description = "Minimal NixOS + Home Manager configuration using mulix";
+    };
   };
 }

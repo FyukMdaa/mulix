@@ -1,4 +1,4 @@
-{ mulib, ... }:
+{mulib, ...}:
 mulib.module {
   name = "constants";
   options = {

@@ -3,13 +3,151 @@
 
 * mulixとは
 
-mulixは、NixOS、Home Manager、およびNix-Darwinの設定を記述するためのNixフレームワークです。
+mulixは、NixOS、Home Manager、およびNix-Darwinの設定を、Nix module systemの上に薄く組み立てるためのフレームワークです。
 
-mulixは、denixのmoduleおよびhostを中心とした構成整理の考え方に影響を受けています。ただし、mulixは単に設定ファイルを整理するだけではなく、module間のデータの流れを明示し、その依存関係を検証および可視化することを重視します。
+設定を =module= と =host= に分けて収集し、各 module の option、target configuration、module 間のデータ受け渡しを一つのグラフとして扱います。
 
-* TODO
-- [] templatesを書く :: 今は仕様が固まっていないため書いていません。
-- [] docsを書く :: denixとの比較やmulixの思想、mulibのオプションや設定例を書く
+mulix自体がNix module systemの代替になることは目指していません。通常のNix moduleのmerge / override / typeの仕組みをできるだけそのまま利用し、mulix固有のDSLは「何を収集するか」「どのconfigNameを受け渡すか」「どのhostで有効にするか」に絞っています。
+
+* 特徴
+
+** module / host の自動収集
+
+=paths= にディレクトリを渡すと、その配下の =.nix= ファイルから =mulib.module=、=mulib.host=、=mulib.overlay= を再帰的に収集します。その他の値を返すファイルは参加しません。
+
+** host の fragment 化
+
+同じ =name= を持つ host は複数ファイルに分割できます。=system= と =type= は同じ値なら重複して書けますが、異なる値を書くと競合としてエラーになります。
+
+** host → module も =send= で統一
+
+module間の受け渡しだけでなく、hostからmoduleへ値を渡す場合も =send= を使います。
+
+通常の contribution は =send.<configName>=、強制 contribution は =send.force.<configName>= です。
+
+#+begin_src nix
+mulib.host {
+  name = "laptop";
+  system = "x86_64-linux";
+
+  send.force.myconfig = {
+    desktop.enable = true;
+  };
+}
+#+end_src
+
+専用の =shared= namespace はありません。
+
+** configName による明示的な依存関係
+
+moduleの関数引数に登録済みconfigNameを書くと、それがreceiverになります。
+
+#+begin_src nix
+# configNames.nix
+{ lib, ... }: {
+  machineInfo = {
+    type = lib.types.attrs;
+    merge = "single";
+    default = {};
+  };
+}
+#+end_src
+
+#+begin_src nix
+# producer
+{ mulib, ... }:
+mulib.module {
+  name = "machine-info";
+  send.machineInfo = {
+    cpu = "amd";
+  };
+}
+#+end_src
+
+#+begin_src nix
+# consumer
+{ machineInfo, mulib, ... }:
+mulib.module {
+  name = "consumer";
+  os = { ... }: {
+    # machineInfo is available here through the normal mulix receiver.
+  };
+}
+#+end_src
+
+=send= の経路は依存グラフに参加し、未登録のconfigNameや競合したmergeをmulix側で診断します。
+
+** Home Manager 統合
+
+=mulib.configurations= では、NixOS / nix-darwin のOS buildにHome Managerを同時に組み込めます。
+
+#+begin_src nix
+homeManager = {
+  enable = true;
+  user = "alice";
+  useGlobalPkgs = true;
+};
+#+end_src
+
+統合モードではHome ManagerのNixOS / nix-darwin moduleをmulixが追加し、各hostの =home= targetをそのuserのHome Manager modulesとして渡します。
+
+* 最小構成
+
+#+begin_src text
+.
+├── flake.nix
+├── conditionNames.nix
+├── configNames.nix
+├── hosts/
+│   └── your_hostname/
+│       └── default.nix
+├── modules/
+│   ├── system.nix
+│   └── tools.nix
+└── overlays/
+    └── packages.nix
+#+end_src
+
+このリポジトリには、そのままコピーして使えるテンプレートも置いてあります。
+
+#+begin_src sh
+nix flake init -t github:fyukmdaa/mulix#minimal
+#+end_src
+
+* ドキュメント
+
+- [[file:docs/ja/index.org][Documentation index]]
+- [[file:docs/ja/getting-started.org][Getting Started]] :: 最初のhost / module / flakeを作る
+- [[file:docs/ja/concepts.org][Concepts]] :: module、host、condition、configName、sendの考え方
+- [[file:docs/ja/reference.org][Reference]] :: 公開APIと各フィールドのリファレンス
+- [[file:docs/ja/denix.org][denixから見たmulix]] :: 影響元であるdenixとの設計上の違い
+- [[file:docs/ja/about_mulix.org][mulixについて]] :: プロジェクトの思想の概要
+
+* Nix module system との関係
+
+mulixの =os= / =home= / =darwin= / =always.*= fragmentは、最終的にはNix module systemへ渡されるmodule definitionです。
+
+そのため、例えば以下のような通常のNix moduleの機構を使えます。
+
+- =lib.mkIf=
+- =lib.mkMerge=
+- =lib.mkDefault=
+- =lib.mkForce=
+- =lib.mkOverride=
+- =lib.mkBefore= / =lib.mkAfter=
+
+mulix固有の便利な構文で表現できない場合は、通常のNix moduleとして記述してください。
+
+* 開発
+
+実装のテストは =tests/= 以下にあります。
+
+#+begin_src sh
+for test in tests/*/run-tests.sh; do
+  bash "$test" || exit 1
+done
+#+end_src
 
 * special thanks
-- [[https://github.com/yunfachi/denix][denix]] :: 構想、設計に大きな影響を受けました。
+
+- [[https://github.com/yunfachi/denix][denix]] :: module / hostを中心とした構成整理の考え方に大きな影響を受けました。

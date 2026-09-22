@@ -1,4 +1,7 @@
-{lib, reservedArgs}: let
+{
+  lib,
+  reservedArgs,
+}: let
   inherit (builtins) isAttrs isList elem;
   errorsLib = import ./errors.nix {inherit lib;};
   hostsLib = import ./hosts.nix {inherit lib;};

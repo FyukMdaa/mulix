@@ -1,0 +1,92 @@
+#+TITLE: denixから見たmulix
+
+* 前提
+
+mulixは [[https://github.com/yunfachi/denix][denix]] のmodule / host中心の構成整理に大きな影響を受けています。denix自体もNixOS、Home Manager、Nix-Darwinをmodule、host、riceなどで構成するためのライブラリとして公開されています。
+
+ここでは「どちらが優れているか」ではなく、mulixがどこに設計上の重心を置いているかを整理します。
+
+* 共通する考え方
+
+- filesystemから設定を集める
+- hostを一つの単位として扱う
+- moduleを再利用可能な構成単位として扱う
+- NixOS / Home Manager / Nix-Darwinを一つのflakeから組み立てる
+
+これはdenixの公開READMEに記載されているmodule / host中心の構成や、統合configurationの考え方とも重なります。
+
+* mulixで変えたところ
+
+** 1. module間のデータフローを第一級にする
+
+denixにおけるconfiguration compositionの考え方を引き継ぎつつ、mulixではmodule間の値の受け渡しを =configName= + =send= として明示します。
+
+#+begin_src text
+module A
+   │
+   │ send.foo
+   ▼
+ configName: foo
+   │
+   │ receiver { foo, ... }:
+   ▼
+module B
+#+end_src
+
+これにより「AがBの値を必要としている」ことを、module functionのreceiverとして静的に観察できます。
+
+** 2. hostからの値も =send= に統一
+
+hostからmoduleへの値も同じgraphへ入れます。
+
+#+begin_src nix
+send.force.myconfig = {
+  graphics.enable = true;
+};
+#+end_src
+
+hostだけが使う専用の =shared= pathを増やさない方針です。
+
+** 3. merge strategyをregistryへ出す
+
+configNameでは値の型だけでなく、merge strategyも宣言します。
+
+#+begin_src nix
+packages = {
+  type = lib.types.listOf lib.types.package;
+  merge = "ordered";
+  default = [];
+};
+#+end_src
+
+この情報を使って、mulixは「複数moduleが同じ値をどう共有するか」をcollection/evaluation時に検証できます。
+
+* Nix module systemを置き換えない
+
+mulixの大きな方針は「最後は通常のNix module」です。
+
+=os=、=home=、=darwin= はNix module definitionとしてtargetへ渡され、=mkIf= や =mkMerge=、override priorityなどのNix semanticsをそのまま利用します。
+
+独自DSLを増やすよりも、通常のNixで表現できる部分は通常のNixへ戻すことを優先します。
+
+* denixから移行するときの考え方
+
+既存のdenix configurationを一度に完全移植する必要はありません。概念を次のように対応させて考えると整理しやすくなります。
+
+| 概念 | mulix |
+|-------+-------|
+| module | =mulib.module= |
+| host | =mulib.host= |
+| OS config | =os= |
+| Home Manager config | =home= |
+| nix-darwin config | =darwin= |
+| module間の値 | =configNames= + =send= |
+| hostからmoduleへの値 | =send= / =send.force= |
+| host条件 | =conditionNames= + =host.is= |
+| 全module option view | =bind = "mulix.modules"= |
+
+実際の移植では、まずhost/moduleの形を揃え、その後でmodule間のimplicitな依存をconfigNameへ切り出すと段階的に整理できます。
+
+* どちらを使うか
+
+プロジェクトの構成方針、既存設定、必要な拡張機能などによって選択は変わります。mulixの設計目標は、既存のNix module semanticsを維持しながらmodule間データフローの明示と検証を強めることです。

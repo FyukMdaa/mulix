@@ -1,2 +1,5 @@
-{ mulib, ... }:
-mulib.host { name = "alpha"; type = "desktop"; }
+{mulib, ...}:
+mulib.host {
+  name = "alpha";
+  type = "desktop";
+}

@@ -1,6 +1,4 @@
-{
-  lib,
-}: let
+{lib}: let
   errors = import ./errors.nix {inherit lib;};
   allowedTargets = ["os" "home" "darwin"];
   allowedTopLevel = ["name" "options" "always" "os" "home" "darwin" "send"];
@@ -17,16 +15,23 @@
       ''
     else let
       unknown = builtins.filter (k: !(builtins.elem k allowed)) (builtins.attrNames attrs);
-      firstUnknown = if unknown == [] then null else builtins.head unknown;
-      position = if firstUnknown == null then null else errors.attrPos attrs firstUnknown;
+      firstUnknown =
+        if unknown == []
+        then null
+        else builtins.head unknown;
+      position =
+        if firstUnknown == null
+        then null
+        else errors.attrPos attrs firstUnknown;
     in
       if unknown != []
-      then errors.invalidField {
-        module = context;
-        field = firstUnknown;
-        inherit allowed position;
-        help = ["remove the field, or use one of the allowed fields above."];
-      }
+      then
+        errors.invalidField {
+          module = context;
+          field = firstUnknown;
+          inherit allowed position;
+          help = ["remove the field, or use one of the allowed fields above."];
+        }
       else attrs;
 
   /*
@@ -145,27 +150,33 @@ in rec {
       else true;
     cleanMod = builtins.removeAttrs mod ["_mulixKind"];
     context = cleanMod.name or "<unnamed>";
-    sourceSuffix = if source == null then "" else " [source: ${source}]";
+    sourceSuffix =
+      if source == null
+      then ""
+      else " [source: ${source}]";
     contextWithSource = "${context}${sourceSuffix}";
 
     _nameCheck =
       if !(mod ? name)
-      then errors.missingField {
-        module = context;
-        field = "name";
-        position = errors.attrPos mod "name";
-      }
+      then
+        errors.missingField {
+          module = context;
+          field = "name";
+          position = errors.attrPos mod "name";
+        }
       else if !(builtins.isString mod.name)
-      then throw ''
-        mulix: invalid module shape
-        module 'name' must be a string, got: ${builtins.typeOf mod.name}
-      ''
+      then
+        throw ''
+          mulix: invalid module shape
+          module 'name' must be a string, got: ${builtins.typeOf mod.name}
+        ''
       else if mod.name == ""
-      then throw ''
-        mulix: invalid module definition
-        module: ${context}${errors.formatLocation (errors.attrPos mod "name")}
-        field 'name' must not be empty
-      ''
+      then
+        throw ''
+          mulix: invalid module definition
+          module: ${context}${errors.formatLocation (errors.attrPos mod "name")}
+          field 'name' must not be empty
+        ''
       else true;
 
     _shapeCheck = checkUnknownKeys contextWithSource allowedTopLevel cleanMod;
@@ -209,7 +220,11 @@ in rec {
       else true;
     sendChecked =
       checkSendShape "${contextWithSource}.send" (errors.attrPos cleanMod "send")
-        (if builtins.isAttrs sendRaw then builtins.removeAttrs sendRaw ["force"] else sendRaw);
+      (
+        if builtins.isAttrs sendRaw
+        then builtins.removeAttrs sendRaw ["force"]
+        else sendRaw
+      );
 
     /*
     shape 検査の発火保証。

@@ -54,7 +54,11 @@ in rec {
           throw ''
             mulix: invalid overlay shape
             overlay: ${context}
-            field 'overlay' must be a function (final: prev: { ... }), got: ${if def ? overlay then builtins.typeOf def.overlay else "nothing"}
+            field 'overlay' must be a function (final: prev: { ... }), got: ${
+              if def ? overlay
+              then builtins.typeOf def.overlay
+              else "nothing"
+            }
           ''
         else if def ? enable && !(builtins.isBool def.enable || builtins.isList def.enable)
         then
@@ -96,7 +100,11 @@ in rec {
       ''
     else {
       overlays = map (e: e.def.overlay) enabled;
-      byName = builtins.listToAttrs (map (e: {name = e.def.name; value = e.def.overlay;}) enabled);
+      byName = builtins.listToAttrs (map (e: {
+          name = e.def.name;
+          value = e.def.overlay;
+        })
+        enabled);
       names = map (e: e.def.name) enabled;
     };
 }

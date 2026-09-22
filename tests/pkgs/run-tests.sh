@@ -156,4 +156,34 @@ expect_success "10. configurations: the built NixOS system sees overlay-applied 
   && cfgs.nixosConfigurations.h.config.out.tools == [ "devenv" "nix-init-from-overlay" ]
 '
 
+
+# Home Manager can be integrated into the OS build.
+# The fake nixosSystem records modules instead of evaluating them, so this checks
+# mulix's wiring without depending on a real Home Manager input in the test fixture.
+HM_INTEGRATION='
+  let
+    fakeNixosSystem = { modules, ... }: { modules = modules; };
+    inputsHM = {
+      home-manager = {
+        nixosModules.home-manager = { };
+      };
+    };
+    mmHM = import ./lib { inherit lib; inputs = inputsHM; };
+    cfgsHM = mmHM.configurations {
+      paths = [ (fx + "/hosts") (fx + "/modules") (fx + "/overlays") ];
+      conditionNames = { };
+      configNames.pkgNames = { type = T.listOf T.str; merge = "ordered"; default = [ ]; };
+      nixosSystem = fakeNixosSystem;
+      homeManager = { enable = true; user = "alice"; };
+    };
+    mods = cfgsHM.nixosConfigurations.h.modules;
+    hm = lib.findFirst (m: lib.isAttrs m && builtins.hasAttr "home-manager" m) null mods;
+  in
+'
+expect_success "11. homeManager integration adds Home Manager to the OS build" "$PRE$HM_INTEGRATION"'
+  hm != null
+  && hm."home-manager".useGlobalPkgs == true
+  && hm."home-manager".users.alice.imports != [ ]
+'
+
 finish "PKGS TESTS"

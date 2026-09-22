@@ -1,2 +1,7 @@
-{ mulib, ... }:
-mulib.host { name = "test"; system = "x86_64-linux"; type = "desktop"; os = { out.fromDefault = 1; }; }
+{mulib, ...}:
+mulib.host {
+  name = "test";
+  system = "x86_64-linux";
+  type = "desktop";
+  os = {out.fromDefault = 1;};
+}

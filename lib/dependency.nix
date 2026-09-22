@@ -88,43 +88,57 @@
     # Completed nodes are never traversed again, avoiding the exponential
     # path explosion of the previous path-only DFS on DAGs with fan-in.
     visit = state: start: let
-      walk = st: path: vias: node:
-        let
-          nodeState = st.${node} or 0;
-        in
-          if nodeState == 1 then
-            let
-              idx = lib.lists.findFirstIndex (x: x == node) null path;
-              len = builtins.length path - idx;
-              cyclePath = (lib.sublist idx len path) ++ [node];
-              viaPath = lib.sublist idx len vias;
-            in {
-              state = st;
-              found = true;
-              cycle = cyclePath;
-              vias = viaPath;
-            }
-          else if nodeState == 2 then
-            { state = st; found = false; cycle = []; vias = []; }
-          else
-            let
-              stEntering = st // { ${node} = 1; };
-              step = acc: succ:
-                if acc.found then acc
-                else
-                  let
-                    child = walk
-                      acc.state
-                      (path ++ [node])
-                      (vias ++ [succ.via])
-                      succ.to;
-                  in child;
-              walked = lib.foldl' step
-                { state = stEntering; found = false; cycle = []; vias = []; }
-                (succOf node);
-              stDone = if walked.found then walked.state else walked.state // { ${node} = 2; };
+      walk = st: path: vias: node: let
+        nodeState = st.${node} or 0;
+      in
+        if nodeState == 1
+        then let
+          idx = lib.lists.findFirstIndex (x: x == node) null path;
+          len = builtins.length path - idx;
+          cyclePath = (lib.sublist idx len path) ++ [node];
+          viaPath = lib.sublist idx len vias;
+        in {
+          state = st;
+          found = true;
+          cycle = cyclePath;
+          vias = viaPath;
+        }
+        else if nodeState == 2
+        then {
+          state = st;
+          found = false;
+          cycle = [];
+          vias = [];
+        }
+        else let
+          stEntering = st // {${node} = 1;};
+          step = acc: succ:
+            if acc.found
+            then acc
+            else let
+              child =
+                walk
+                acc.state
+                (path ++ [node])
+                (vias ++ [succ.via])
+                succ.to;
             in
-              walked // { state = stDone; };
+              child;
+          walked =
+            lib.foldl' step
+            {
+              state = stEntering;
+              found = false;
+              cycle = [];
+              vias = [];
+            }
+            (succOf node);
+          stDone =
+            if walked.found
+            then walked.state
+            else walked.state // {${node} = 2;};
+        in
+          walked // {state = stDone;};
     in
       if state.found
       then state
@@ -133,7 +147,12 @@
     result =
       lib.foldl'
       (state: start: visit state start)
-      { found = false; cycle = []; vias = []; state = {}; }
+      {
+        found = false;
+        cycle = [];
+        vias = [];
+        state = {};
+      }
       nodes;
   in
     builtins.removeAttrs result ["state"];
@@ -148,7 +167,11 @@
   # (The DFS below copies its visited-state map at every step, which is O(V^2).)
   isAcyclic = edges: let
     round = es: let
-      hasIncoming = builtins.listToAttrs (map (e: {name = e.to; value = true;}) es);
+      hasIncoming = builtins.listToAttrs (map (e: {
+          name = e.to;
+          value = true;
+        })
+        es);
       remaining = builtins.filter (e: builtins.hasAttr e.from hasIncoming) es;
     in
       if remaining == []
@@ -165,8 +188,12 @@
   # DFS has always reported, while the common no-cycle case never pays for it.
   detectCycles = {edges}:
     if isAcyclic edges
-    then { found = false; cycle = []; vias = []; }
-    else detectCyclesDfs { inherit edges; };
+    then {
+      found = false;
+      cycle = [];
+      vias = [];
+    }
+    else detectCyclesDfs {inherit edges;};
 
   formatCycleError = {
     cycle,
@@ -183,7 +210,8 @@
     # A -> A: the same module name is both ends of the edge, i.e. the module
     # sends and receives the same configName.  This is an error by design.
     isSelfDependency =
-      builtins.length cycle == 2
+      builtins.length cycle
+      == 2
       && builtins.elemAt cycle 0 == builtins.elemAt cycle 1;
     selfDetail = ''
       module '${builtins.head cycle}' depends on itself: it both sends and receives configName '${builtins.head vias}'.
@@ -195,7 +223,11 @@
   in ''
     ${headline}
     ${hops}
-    ${if isSelfDependency then selfDetail else ""}(declared dependency graph cycle detection)
+    ${
+      if isSelfDependency
+      then selfDetail
+      else ""
+    }(declared dependency graph cycle detection)
   '';
 
   # 便利関数: buildGraph + detectCycles をまとめて実行し、

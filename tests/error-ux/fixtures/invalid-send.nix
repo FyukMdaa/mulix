@@ -1,4 +1,4 @@
 {
   name = "error-ux-test";
-  send = [ "not-an-attrset" ];
+  send = ["not-an-attrset"];
 }

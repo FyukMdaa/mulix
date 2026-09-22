@@ -60,8 +60,10 @@
       files =
         builtins.sort
         (a: b:
-          if defaultFirst && a == "default.nix" && b != "default.nix" then true
-          else if defaultFirst && b == "default.nix" && a != "default.nix" then false
+          if defaultFirst && a == "default.nix" && b != "default.nix"
+          then true
+          else if defaultFirst && b == "default.nix" && a != "default.nix"
+          then false
           else a < b)
         (builtins.filter isNixFile (builtins.attrNames visible));
       dirs =
@@ -90,12 +92,19 @@
     lib.concatMap
     (root:
       if entryType root != "directory"
-      then [{
-        path = root;
-        label = baseNameOf (toString root);
-        dirName = null;
-      }]
-      else listNixFiles {inherit root; recursive = true; defaultFirst = true;})
+      then [
+        {
+          path = root;
+          label = baseNameOf (toString root);
+          dirName = null;
+        }
+      ]
+      else
+        listNixFiles {
+          inherit root;
+          recursive = true;
+          defaultFirst = true;
+        })
     paths;
 
   /*
@@ -145,14 +154,16 @@
           expected a mulib.module descriptor.
           Wrap the module definition in 'mulib.module { ... }' instead of returning a raw attrset.
         ''
-      else c // {inherit mod;}) collected;
+      else c // {inherit mod;})
+    collected;
 
     names = map (c:
       if !(c.mod ? name)
-      then throw ''
-        mulix: invalid module shape
-        module at collection index ${toString c.index}${sourceLabel c} has no 'name'
-      ''
+      then
+        throw ''
+          mulix: invalid module shape
+          module at collection index ${toString c.index}${sourceLabel c} has no 'name'
+        ''
       else c.mod.name)
     resolved;
 

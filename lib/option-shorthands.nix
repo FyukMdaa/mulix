@@ -1,4 +1,6 @@
-/* mulix option specification helpers. */
+/*
+mulix option specification helpers.
+*/
 {lib}: let
   mk = type: default: lib.mkOption {inherit type default;};
   mkOptionalDefault = type: default:
@@ -72,5 +74,4 @@ in {
           mulix: mulib.select has no case for value '${value}'
           available cases: ${lib.concatStringsSep ", " (builtins.filter (x: x != "default") caseNames)}
         '';
-
 }

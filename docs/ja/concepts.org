@@ -1,0 +1,283 @@
+#+TITLE: mulix Concepts
+
+* 1. 全体モデル
+
+mulixでは、設定全体を次の4層に分けて考えます。
+
+#+begin_src text
+filesystem
+   │
+   ├── hosts
+   ├── modules
+   └── overlays
+        │
+        ▼
+     collection
+        │
+        ├── host composition
+        ├── module normalization
+        └── configName graph
+                │
+                ▼
+          target module list
+                │
+        ┌───────┼────────┐
+        ▼       ▼        ▼
+       NixOS    Home     Darwin
+       module   Manager  module
+#+end_src
+
+重要なのは、mulix独自のmerge systemを最終設定のために別途作るのではなく、最終段階ではNix module systemへ戻すことです。
+
+* 2. module
+
+基本形は次です。
+
+#+begin_src nix
+{ mulib, ... }:
+mulib.module {
+  name = "example";
+  options = { ... };
+  always = { ... };
+  os = { ... };
+  home = { ... };
+  darwin = { ... };
+  send = { ... };
+}
+#+end_src
+
+=options= はmoduleのoption schema、=os/home/darwin= はtarget-specific configurationです。
+
+* 3. enable
+
+=options.enable= が存在しない場合、moduleは無効として扱われます。必要なmoduleは明示的に =enable= を指定してください。
+
+明示する場合は例えば次です。
+
+#+begin_src nix
+options.enable = mulib.bool.true;
+#+end_src
+
+host条件と組み合わせることもできます。
+
+#+begin_src nix
+options.enable = [
+  host.feat.gui
+  [ host.feat.niri host.feat.hyprland ]
+];
+#+end_src
+
+この記法は次の論理として扱います。
+
+#+begin_src text
+A AND (B OR C)
+#+end_src
+
+empty list (=[]=) は曖昧なのでエラーになります。nested listはOR groupです。
+
+moduleがdisableされても =always.<target>= は残ります。無効時にも必要な構造を =always= へ置き、必要なら =opt.enable= を使って通常のNix module条件式を書きます。
+
+#+begin_src nix
+always.os = { opt, lib, ... }: {
+  services.example.mode = lib.mkIf (!opt.enable) "fallback";
+};
+#+end_src
+
+* 4. host
+
+hostにはmachine identityとhost-local target fragmentsがあります。
+
+#+begin_src nix
+mulib.host {
+  name = "laptop";
+  system = "x86_64-linux";
+  type = "laptop";
+  feat = [ "gui" ];
+  role = [ "workstation" ];
+
+  os = { ... };
+  home = { ... };
+  send = { ... };
+}
+#+end_src
+
+同一hostのfragmentは =name= でmergeされます。
+
+* 5. host.is と conditionNames
+
+=conditionNames= は利用可能なhost条件のcatalogです。
+
+#+begin_src nix
+{
+  type = [ "laptop" "server" ];
+  feat = [ "gui" "cli" ];
+  role = [ "workstation" "infra" ];
+}
+#+end_src
+
+=host.is= はそこから生成されるbool viewです。生成元は次です。
+
+- =system= からのOS名（=linux= / =darwin=）
+- =system= からのarchitecture（例: =x86_64=）
+- =type=
+- =role=
+- =feat=
+
+=conditionNames.is= を宣言することはできません。
+
+* 6. configName
+
+configNameは、module間で「名前付きの値を渡すためのAPI」です。
+
+registryは「どの型で」「どうmergeするか」を宣言します。
+
+#+begin_src nix
+{
+  packageList = {
+    type = lib.types.listOf lib.types.package;
+    merge = "ordered";
+    default = [];
+  };
+}
+#+end_src
+
+producer:
+
+#+begin_src nix
+send.packageList = [ pkgs.git ];
+#+end_src
+
+receiver:
+
+#+begin_src nix
+{ packageList, ... }:
+...
+#+end_src
+
+* 7. merge strategy
+
+** single
+
+1つのconfigName内でleaf pathのownershipを検証します。
+
+例えばmodule Aが =foo.bar=、module Bが =foo.baz= を書くことはできますが、同じ =foo.bar= や親子関係で重なるpathは競合になります。
+
+単純な「一つのmoduleが一つの設定領域を所有する」契約に向いています。
+
+** namespaced
+
+top-level namespaceごとのmergeを行います。同じnamespaceではattrsetとしてmergeできる必要があります。
+
+#+begin_src nix
+{
+  myApps = { type = lib.types.attrs; merge = "namespaced"; };
+}
+#+end_src
+
+複数moduleが =myApps.foo=、=myApps.bar= のように別namespaceを追加する形に向いています。
+
+** ordered
+
+list型を順序付きで連結します。
+
+#+begin_src nix
+{
+  packageList = {
+    type = lib.types.listOf lib.types.package;
+    merge = "ordered";
+    default = [];
+  };
+}
+#+end_src
+
+順序が意味を持つmodule contributionsに使います。list要素の内部path ownershipは走査しません。
+
+* 8. send と send.force
+
+通常:
+
+#+begin_src nix
+send.foo = value;
+#+end_src
+
+強制:
+
+#+begin_src nix
+send.force.foo = value;
+#+end_src
+
+=send.force= は通常のNix module definitionで =lib.mkForce= 相当のpriorityを持つcontributionとして扱われます。
+
+また、nested valueに =mkIf=、=mkMerge=、=mkBefore=、=mkAfter=、=mkOverride= などを含める場合も、通常のNix module semanticsに沿って処理されます。
+
+* 9. myconfig
+
+=myconfig= は別のspecial DSLではありません。次のregistry entryを持つ単なるconfigNameです。
+
+#+begin_src nix
+myconfig = {
+  bind = "mulix.modules";
+};
+#+end_src
+
+このbindingはmodule option全体をviewとして提供します。=bind= が =mulix.modules= の場合、type/defaultはmulix側で決まるため指定しません。
+
+* 10. target fragment
+
+target fragmentは普通のNix module definitionです。
+
+#+begin_src nix
+os = { lib, config, pkgs, ... }: {
+  # normal NixOS module code
+};
+#+end_src
+
+function fragmentを使うことで、module systemが提供する =config= / =options= / =pkgs= と、mulixが提供する =opt= / =host= / registered configNamesを同時に利用できます。
+
+* 11. collection phaseとtarget phase
+
+mulixは概念上少なくとも次の2段階を持ちます。
+
+** collection phase
+
+filesystemを読み、descriptorを判定し、host / module / overlayを収集します。
+
+この段階ではNix module systemのfinal =config= はまだ存在しません。
+
+** target phase
+
+=lib.evalModules= 相当のmodule systemにmodule listを渡します。ここで =config=、=options=、最終的な =pkgs= などが得られます。
+
+この区別が、moduleトップレベルとfragment functionで利用可能な引数の違いを生みます。
+
+* 12. pkgs
+
+fragmentで参照する =pkgs= は、target phaseではmodule system側の =pkgs= が優先されます。そのため =nixpkgs.overlays= やhost platformを反映した =pkgs= が見えます。
+
+module collection時に =pkgs= が必要なmoduleについては、=configurations= がhostの =system= から対応するpackage setを用意します。
+
+* 13. paths
+
+=paths= のdirectoryは再帰的に探索されます。
+
+=default.nix= はディレクトリ内で先に処理され、その他のファイルも決定的な順序で処理されます。
+
+同じhostの複数fragmentを安全に分割するため、host directoryを使用するのが一般的です。
+
+* 14. 普通のNixへ戻る
+
+mulixのAPIでは表現しにくいものを無理にDSL化する必要はありません。
+
+#+begin_src nix
+os = { lib, config, ... }:
+  lib.mkMerge [
+    {
+      services.foo.enable = true;
+    }
+    (lib.mkIf config.services.bar.enable {
+      services.foo.extraConfig = "bar";
+    })
+  ];
+#+end_src
+
+「できるだけNixのまま書く」がmulixの基本方針です。

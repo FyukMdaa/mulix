@@ -1,0 +1,311 @@
+#+TITLE: mulix Reference
+
+* =mulix.lib=
+
+flakeからは通常、次のようにlibを取得します。
+
+#+begin_src nix
+m = mulix.lib { inherit lib inputs; };
+#+end_src
+
+主な引数:
+
+- =lib= :: nixpkgsのlib。必須。
+- =inputs= :: flake inputs。省略可能。
+- =pkgs= :: standalone =mkMulix= で使うpackage set。通常の =configurations= ではhost systemから自動解決されます。
+
+* =mulib.module=
+
+#+begin_src nix
+mulib.module {
+  name = "foo";
+  options = { ... };
+  always = { ... };
+  os = { ... };
+  home = { ... };
+  darwin = { ... };
+  send = { ... };
+}
+#+end_src
+
+必須:
+
+- =name= :: module名。空文字列不可。
+
+任意:
+
+- =options= :: option definitionsのattrsetまたはfunction。
+- =always= :: targetごとの常時有効fragment。
+- =os= :: NixOS target fragment。
+- =home= :: Home Manager target fragment。
+- =darwin= :: nix-darwin target fragment。
+- =send= :: configNameへのcontribution。
+
+=always= は =os=、=home=、=darwin=、=send= を持てます。
+
+* =mulib.host=
+
+#+begin_src nix
+mulib.host {
+  name = "host";
+  system = "x86_64-linux";
+  type = "laptop";
+  feat = [ "gui" ];
+  role = [ "workstation" ];
+  os = { ... };
+  home = { ... };
+  darwin = { ... };
+  send = { ... };
+}
+#+end_src
+
+=features= は =feat= のalias、=roles= は =role= のaliasです。
+
+注意:
+
+- =is= は予約済みで手書きできません。
+- =shared= はhost APIにありません。hostからの受け渡しも =send= を使います。
+- =system= と =type= はsingle-value fieldです。同じhostのfragment間で値が異なるとエラーです。
+- =feat= と =role= はlistとして結合され、重複は除去されます。
+
+* =mulib.overlay=
+
+#+begin_src nix
+mulib.overlay {
+  name = "example";
+  overlay = final: prev: {
+    foo = ...;
+  };
+}
+#+end_src
+
+overlayは =paths= から自動収集できるほか、 =mkMulix.overlays= / =configurations.overlays= で追加できます。
+
+* =mulib.configurations=
+
+#+begin_src nix
+cfgs = m.configurations {
+  paths = [ ./hosts ./modules ./overlays ];
+  conditionNames = import ./conditionNames.nix;
+  configNames = import ./configNames.nix { inherit lib; };
+};
+#+end_src
+
+主な引数:
+
+** discovery / mulix
+
+- =paths= :: recursive discoveryするpathsのlist。
+- =hostDefs= :: =name -> descriptor | descriptor list= のattrset。
+- =overlays= :: extra overlay descriptors。
+- =conditionNames= :: host condition registry。
+- =configNames= :: configName registry。
+- =force= :: low-level override API。通常は =send.force= を使います。
+- =specialArgs= :: 各target systemへ追加で渡す引数。
+
+** target-specific
+
+- =extraNixosModules= :: NixOS module追加。
+- =extraDarwinModules= :: nix-darwin module追加。
+- =extraHomeModules= :: Home Manager module追加。
+
+** Home Manager
+
+- =homeManager= :: =false=、=true=、またはattrset。
+- =homeManager.user= :: integrated Home Manager user。
+- =homeManager.useGlobalPkgs= :: 既定値true。
+- =homeManagerUser= :: legacy user setting。=homeManager.user= が優先されます。
+
+** wrappers
+
+- =nixosSystem= :: external wrapper。省略時は =inputs.nixpkgs.lib.nixosSystem=。
+- =darwinSystem= :: external wrapper。省略時は =inputs.nix-darwin.lib.darwinSystem=。
+- =homeManagerConfiguration= :: standalone Home Manager wrapper。
+- =pkgsFor= :: =system -> pkgs= または =system -> pkgs= のattrset。
+
+戻り値:
+
+#+begin_src nix
+{
+  nixosConfigurations = { ... };
+  darwinConfigurations = { ... };
+  homeConfigurations = { ... };
+  raw = { ... };
+  hostNames = [ ... ];
+}
+#+end_src
+
+* =mulib.mkMulix=
+
+1 hostだけを評価したい場合に使います。
+
+#+begin_src nix
+r = m.mkMulix {
+  host = "laptop";
+  paths = [ ./hosts ./modules ];
+  conditionNames = ...;
+  configNames = ...;
+};
+#+end_src
+
+主な戻り値:
+
+- =host= :: selected host view。
+- =hosts= :: fleet全体のcomposed hosts。
+- =modules= :: normalized module records。
+- =targetModuleList= :: target module listを生成するhelper。
+- =hostFragments= :: host fragment情報。
+- =configGraph= :: configName graph。
+- =dependencyGraph= :: dependency graph。
+- =overlays= / =overlayModule= :: resolved overlays。
+
+* =mulib.mulibApi=
+
+module側へ渡す主なAPIです。
+
+#+begin_src nix
+{
+  module,
+  host,
+  overlay,
+  mkMulix,
+  runDiagnostics,
+  graphLib,
+  types,
+  type,
+  mkOption,
+  mkEnableOption,
+  mkIf,
+  mkMerge,
+  mkDefault,
+  mkForce,
+  mkOverride,
+  mkOrder,
+  mkBefore,
+  mkAfter,
+  bool,
+  str,
+  int,
+  float,
+  lines,
+  enum,
+  oneOf,
+  attrs,
+  attrsOf,
+  path,
+  package,
+  listOf,
+  nullOr,
+  either,
+  select,
+}
+#+end_src
+
+* option shorthand
+
+頻出型にはoption construction shorthandがあります。
+
+#+begin_src nix
+options.enable = mulib.bool.true;
+options.name = mulib.str "default-name";
+options.port = mulib.int 8080;
+options.path = mulib.path ./data;
+options.packages = mulib.listOf mulib.type.package [];
+#+end_src
+
+デフォルトを持たせたくない場合、通常のshorthandでは =null= を渡します。
+
+#+begin_src nix
+requiredName = mulib.str null;
+requiredPath = mulib.path null;
+#+end_src
+
+これは「defaultなし」です。
+
+nullableなoptionには =nullOr= を使います。
+
+#+begin_src nix
+maybeName = mulib.nullOr mulib.type.str null;
+#+end_src
+
+ここでの =null= はliteral defaultです。
+
+* =type= shorthand
+
+#+begin_src nix
+mulib.type.bool
+mulib.type.str
+mulib.type.int
+mulib.type.float
+mulib.type.lines
+mulib.type.path
+mulib.type.package
+mulib.type.attrs
+mulib.type.enum [ "a" "b" ]
+mulib.type.oneOf [ lib.types.str lib.types.int ]
+mulib.type.attrsOf lib.types.str
+mulib.type.listOf lib.types.package
+mulib.type.nullOr lib.types.str
+mulib.type.either lib.types.str lib.types.int
+#+end_src
+
+* =select=
+
+文字列値でcaseを選ぶ小さなhelperです。
+
+#+begin_src nix
+mulib.select variant {
+  latest = { ... };
+  zen = { ... };
+  default = { ... };
+}
+#+end_src
+
+指定値が存在し、かつstringであることを要求します。 =default= がない場合はunmatched valueを明示的なerrorにできます。
+
+* configName registry
+
+通常のentry:
+
+#+begin_src nix
+foo = {
+  type = lib.types.attrs;
+  merge = "single";
+  default = {};
+};
+#+end_src
+
+supportされる =merge= は次の3つです。
+
+- =single=
+- =namespaced=
+- =ordered=
+
+=ordered= はlist-compatible typeが必要です。
+
+=bind = "mulix.modules"= はmodule option全体をconfigNameとして公開します。このbindingでは =type= と =default= を指定しません。
+
+* receiver
+
+function module / fragmentが次のような引数を宣言すると、registryからconfigNameが注入されます。
+
+#+begin_src nix
+{ packageList, host, mulib, ... }:
+...
+#+end_src
+
+未知のreceiver名はcollection時にエラーになります。
+
+* target fragment function
+
+#+begin_src nix
+os = { config, options, pkgs, lib, opt, host, ... }: {
+  ...
+};
+#+end_src
+
+Nix module system由来の引数とmulix由来の引数の両方を利用できます。
+
+* diagnostics / graph
+
+=mulib.runDiagnostics= と =mulib.graphLib= は診断・依存関係の調査用APIです。設定本体を書くときは、まず =module=、=host=、=send=、=configNames= の基本APIだけで構成することを推奨します。

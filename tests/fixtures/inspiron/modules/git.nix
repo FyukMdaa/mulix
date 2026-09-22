@@ -1,9 +1,9 @@
 # Reads the complete module-options view through the explicitly bound `hostconf` configName.
-{ mulib, ... }:
+{mulib, ...}:
 mulib.module {
   name = "git";
   options.enable = mulib.bool.true;
-  home = { hostconf, ... }: {
+  home = {hostconf, ...}: {
     out.gitUser = hostconf.constants.username;
   };
 }

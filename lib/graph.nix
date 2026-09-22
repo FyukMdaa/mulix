@@ -48,7 +48,10 @@
   # Build graph nodes from normalized/evaluated mulix modules.  Disabled nodes
   # remain present so graph output distinguishes "disabled" from "not in the
   # graph".  `config` is the evaluated module-system config.
-  moduleNodes = {modules, config}:
+  moduleNodes = {
+    modules,
+    config,
+  }:
     map
     (mod: {
       name = mod.name;
@@ -80,16 +83,26 @@ in rec {
     title ? "mulix dependency graph",
   }: let
     nodeNames = lib.unique (map (n: n.name) nodes ++ nodeNamesFromEdges edges);
-    nodeMap = builtins.listToAttrs (map (n: { name = n.name; value = n; }) nodes);
+    nodeMap = builtins.listToAttrs (map (n: {
+        name = n.name;
+        value = n;
+      })
+      nodes);
     ids = mkNodeIds nodeNames;
 
     nodeId = n: ids.${n} or (throw "mulix: internal error: missing node id for '${n}'");
 
     nodeLines =
       map
-      (n:
-        let node = nodeMap.${n} or { name = n; disabled = false; };
-        in "  \"${nodeId n}\" [label=\"${escape (renderNodeLabel node)}\"];" )
+      (n: let
+        node =
+          nodeMap.${
+            n
+          } or {
+            name = n;
+            disabled = false;
+          };
+      in "  \"${nodeId n}\" [label=\"${escape (renderNodeLabel node)}\"];")
       nodeNames;
 
     edgeLines =
@@ -121,16 +134,26 @@ in rec {
     direction ? "LR",
   }: let
     nodeNames = lib.unique (map (n: n.name) nodes ++ nodeNamesFromEdges edges);
-    nodeMap = builtins.listToAttrs (map (n: { name = n.name; value = n; }) nodes);
+    nodeMap = builtins.listToAttrs (map (n: {
+        name = n.name;
+        value = n;
+      })
+      nodes);
     ids = mkNodeIds nodeNames;
 
     nodeId = n: ids.${n} or (throw "mulix: internal error: missing node id for '${n}'");
 
     nodeLines =
       map
-      (n:
-        let node = nodeMap.${n} or { name = n; disabled = false; };
-        in "  ${nodeId n}[\"${escape (renderNodeLabel node)}\"]")
+      (n: let
+        node =
+          nodeMap.${
+            n
+          } or {
+            name = n;
+            disabled = false;
+          };
+      in "  ${nodeId n}[\"${escape (renderNodeLabel node)}\"]")
       nodeNames;
 
     edgeLines =

@@ -35,7 +35,10 @@
     parts = lib.splitString "-" system;
   in
     if builtins.length parts < 2
-    then { arch = system; os = null; }
+    then {
+      arch = system;
+      os = null;
+    }
     else {
       arch = builtins.head parts;
       os = builtins.concatStringsSep "-" (builtins.tail parts);
@@ -49,7 +52,9 @@
     ++ (lib.optional (sys.arch != "") sys.arch);
 
   typeNamesOf = host:
-    if (host.type or null) != null then [host.type] else [];
+    if (host.type or null) != null
+    then [host.type]
+    else [];
 
   generatedIsNames = host:
     systemFlags host ++ typeNamesOf host ++ (host.roles or []) ++ (host.features or []);
@@ -242,14 +247,16 @@ in rec {
         builtins.foldl'
         (ok: field:
           builtins.seq ok
-          (if builtins.hasAttr field host && !(builtins.isAttrs host.${field} || lib.isFunction host.${field})
-          then
-            throw ''
-              mulix: invalid host shape
-              host: ${context}
-              field '${field}' must be a module (attrset or function), got: ${builtins.typeOf host.${field}}
-            ''
-          else true))
+          (
+            if builtins.hasAttr field host && !(builtins.isAttrs host.${field} || lib.isFunction host.${field})
+            then
+              throw ''
+                mulix: invalid host shape
+                host: ${context}
+                field '${field}' must be a module (attrset or function), got: ${builtins.typeOf host.${field}}
+              ''
+            else true
+          ))
         true
         configFields;
     in
@@ -258,7 +265,7 @@ in rec {
         (builtins.seq nameCheck
           (builtins.seq systemCheck
             (builtins.seq typeCheck
-(builtins.seq listCheck
+              (builtins.seq listCheck
                 (builtins.seq sendCheck
                   (builtins.seq sendForceCheck configCheck)))))));
 
@@ -443,9 +450,11 @@ in rec {
         throw ''
           mulix: undeclared ${kind} condition(s) in host '${context}':
           ${builtins.concatStringsSep ", " bad}
-          ${if kind == "feat"
+          ${
+            if kind == "feat"
             then "Add these names to conditionNames.feat before using them, unless the name is already a generated system flag."
-            else "Add these names to conditionNames." + kind + " before using them."}
+            else "Add these names to conditionNames." + kind + " before using them."
+          }
         ''
       else true;
   in
@@ -485,7 +494,9 @@ in rec {
   }: let
     _check = validateComposedHosts composed conditionNames;
     host =
-      composed.${hostName}
+      composed.${
+        hostName
+      }
       or (throw ''
         mulix: unknown host '${hostName}'
         known hosts: ${builtins.concatStringsSep ", " (builtins.attrNames composed)}

@@ -1,0 +1,96 @@
+#+TITLE: mulixについて
+
+* mulixについて
+
+mulixは、NixOS、Home Manager、Nix-Darwinを一つのflakeで管理するための、薄いNixフレームワークです。
+
+設計の中心は次の3つです。
+
+1. *構成の収集* :: =paths= からmodule / host / overlayを発見する。
+2. *moduleの評価* :: 各moduleのoptionsとtarget fragmentをNix module systemへつなぐ。
+3. *データフローの明示* :: module間やhostからmoduleへの値を =configName= + =send= で受け渡す。
+
+* 目指さないもの
+
+mulixは、Nix module systemを別の設定言語に置き換えることを目的にしていません。
+
+Nixのoption type、merge、override、=mkIf=、=mkMerge= などで表現できるものは、原則としてそのままNixの機構を使います。
+
+そのため、mulixは「Nix moduleを書きやすくする巨大なDSL」ではなく、「module / host / dependencyの整理と検証をNix module systemに足す薄い層」という位置付けです。
+
+* denixから受けた影響
+
+denixのmodule / hostを中心に設定を構成する発想から大きな影響を受けています。一方で、mulixでは次を特に重視しています。
+
+- module間のデータフローを =configName= として明示する
+- hostからmoduleへ渡す値も =send= に統一する
+- merge strategyやpath ownershipを評価時に検証する
+- エラーを「何が壊れたか」だけでなく「どこで」「なぜ」「何を直すか」まで表示する
+- 通常のNix module semanticsを可能な限り温存する
+
+* 最も重要な考え方
+
+** optionはmoduleの公開API
+
+moduleの =options= は、そのmoduleが外部へ公開する設定値です。
+
+=options.enable= はmodule自体の有効化条件として扱われます。
+
+** targetは実際の設定
+
+=os=、=home=、=darwin= はそれぞれ対応するmodule systemへ入る設定fragmentです。
+
+#+begin_src nix
+mulib.module {
+  name = "example";
+
+  options.enable = mulib.bool.true;
+
+  os = { pkgs, ... }: {
+    environment.systemPackages = [ pkgs.hello ];
+  };
+
+  home = { pkgs, ... }: {
+    home.packages = [ pkgs.hello ];
+  };
+}
+#+end_src
+
+** =send= はデータフロー
+
+設定そのものと、module間で渡す値を分離できます。
+
+#+begin_src nix
+# producer
+send.foo = { value = 42; };
+
+# consumer
+{ foo, ... }:
+...
+#+end_src
+
+receiver側ではconfigNameが関数引数になります。configNameは先に =configNames= に登録します。
+
+* エスケープハッチ
+
+fragmentを関数として書けば、その時点でNix module systemから =config=、=options=、=pkgs= などを受け取れます。
+
+#+begin_src nix
+os = { config, options, lib, opt, ... }: {
+  # ordinary NixOS module configuration
+};
+#+end_src
+
+一方、moduleのトップレベルで =config= / =options= を参照することはできません。トップレベルはcollection phaseで評価されるためです。
+
+#+begin_src nix
+# NG
+os = {
+  foo = config.bar;
+};
+
+# OK
+os = { config, ... }: {
+  foo = config.bar;
+};
+#+end_src

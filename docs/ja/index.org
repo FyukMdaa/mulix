@@ -1,0 +1,13 @@
+#+TITLE: mulix documentation
+
+* Documentation
+
+- [[file:getting-started.org][Getting Started]] :: 最初のconfigurationを作る
+- [[file:concepts.org][Concepts]] :: module / host / configName / sendのモデル
+- [[file:reference.org][Reference]] :: 公開APIとregistry、shorthand
+- [[file:denix.org][denixから見たmulix]] :: 設計上の共通点と差分
+- [[file:about_mulix.org][mulixについて]] :: プロジェクトの思想
+
+* Start here
+
+まず [[file:getting-started.org][Getting Started]] を読み、 [[../../templates/minimal/][minimal template]] をベースに設定を作ってください。

@@ -1,0 +1,313 @@
+#+TITLE: mulix Getting Started
+
+* 1. テンプレートから始める
+
+mulixをflake templateとして公開している場合は、次で最小構成を作れます。
+
+#+begin_src sh
+nix flake init -t github:fyukmdaa/mulix#minimal
+#+end_src
+
+生成後は、まず =flake.nix=、=hosts/=、=modules/= を確認してください。
+
+* 2. flake.nix
+
+最小のNixOS + Home Manager統合は、次の形にできます。
+
+#+begin_src nix
+{
+  description = "My NixOS configuration";
+
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+
+    home-manager = {
+      url = "github:nix-community/home-manager";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
+    mulix = {
+      url = "github:fyukmdaa/mulix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
+
+  outputs = inputs @ { self, nixpkgs, mulix, ... }:
+    let
+      lib = nixpkgs.lib;
+      m = mulix.lib { inherit lib inputs; };
+      cfgs = m.configurations {
+        paths = [ ./hosts ./modules ./overlays ];
+        conditionNames = import ./conditionNames.nix;
+        configNames = import ./configNames.nix { inherit lib; };
+
+        specialArgs = { inherit inputs; };
+
+        homeManager = {
+          enable = true;
+          user = "your_username";
+        };
+      };
+    in {
+      inherit (cfgs) nixosConfigurations darwinConfigurations homeConfigurations;
+    };
+}
+#+end_src
+
+=paths= はdirectoryでもfileでも使えます。通常は =./hosts=、=./modules=、=./overlays= をまとめて指定するだけで十分です。
+
+* 3. hostを書く
+
+hostは =mulib.host= で定義します。
+
+#+begin_src nix
+{ mulib, ... }:
+mulib.host {
+  name = "your_hostname";
+  system = "x86_64-linux";
+  type = "laptop";
+  feat = [ "cli" "gui" ];
+  role = [ "workstation" ];
+
+  os = {
+    nixpkgs.hostPlatform = "x86_64-linux";
+    system.stateVersion = "26.05";
+  };
+
+  home = {
+    home.stateVersion = "26.05";
+  };
+
+  send.force.myconfig = {
+    tools.enable = true;
+  };
+}
+#+end_src
+
+hostの directory 名は識別子ではありません。hostのidentityは =name= で決まります。同じnameを持つfragmentは一つのhostへmergeされます。
+
+* 4. conditionNamesを書く
+
+=host.type= と =host.role=、ユーザー定義の =host.feat= を使う場合は、対応する名前をregistryに登録します。
+
+#+begin_src nix
+{
+  type = [
+    "laptop"
+    "desktop"
+    "server"
+  ];
+
+  feat = [
+    "cli"
+    "gui"
+    "drawing"
+  ];
+
+  role = [
+    "workstation"
+    "infra"
+  ];
+}
+#+end_src
+
+=host.is= 自体は登録しません。=host.is.linux=、=host.is.darwin=、アーキテクチャ名などは =system= から生成されます。
+
+例えばmodule側では次のように書けます。
+
+#+begin_src nix
+{ host, mulib, ... }:
+mulib.module {
+  name = "graphics";
+  options.enable = [ host.feat.gui host.is.linux ];
+
+  os = {
+    services.xserver.enable = true;
+  };
+}
+#+end_src
+
+=options.enable= のlistはANDとして扱われます。nested listをOR groupとして使えます。
+
+#+begin_src nix
+options.enable = [
+  host.feat.gui
+  [ host.feat.niri host.feat.hyprland ]
+];
+#+end_src
+
+上は「gui かつ (niri または hyprland)」です。
+
+* 5. moduleを書く
+
+moduleは =mulib.module= で包みます。
+
+#+begin_src nix
+{ mulib, ... }:
+mulib.module {
+  name = "tools";
+
+  options = {
+    enable = mulib.bool.false;
+    package = mulib.package null;
+  };
+
+  os = { pkgs, opt, ... }: {
+    environment.systemPackages = [
+      (if opt.package != null then opt.package else pkgs.hello)
+    ];
+  };
+}
+#+end_src
+
+ここで =mulib.package null= の =null= は「defaultなし」であり、option type自体がnullを許すわけではありません。nullを値として許したい場合は =mulib.nullOr= を使います。
+
+#+begin_src nix
+optionalPackage = mulib.nullOr mulib.type.package null;
+#+end_src
+
+* 6. configNameを定義する
+
+module間でデータを渡す場合は先にregistryを作ります。
+
+#+begin_src nix
+{ lib, ... }:
+{
+  machineInfo = {
+    type = lib.types.attrs;
+    merge = "single";
+    default = {};
+  };
+}
+#+end_src
+
+moduleから送ります。
+
+#+begin_src nix
+{ mulib, ... }:
+mulib.module {
+  name = "machine-info";
+
+  send.machineInfo = {
+    cpu = "amd";
+    source = "laptop";
+  };
+}
+#+end_src
+
+別moduleで受け取ります。
+
+#+begin_src nix
+{ machineInfo, mulib, ... }:
+mulib.module {
+  name = "report";
+
+  os = { ... }: {
+    environment.etc."machine-info".text = builtins.toJSON machineInfo;
+  };
+}
+#+end_src
+
+receiverの引数名はregistryに存在するconfigNameである必要があります。未登録ならmulixがcollection時に診断します。
+
+* 7. hostからoverrideする
+
+host側の値をmoduleのoptionへ渡すときも =send.force= を使います。
+
+#+begin_src nix
+mulib.host {
+  name = "your_hostname";
+
+  send.force.myconfig = {
+    tools.enable = true;
+  };
+}
+#+end_src
+
+=myconfig= は次のようにbindできます。
+
+#+begin_src nix
+{ lib, ... }:
+{
+  myconfig = {
+    bind = "mulix.modules";
+  };
+}
+#+end_src
+
+これにより =myconfig= はmodule option全体のviewになります。
+
+=send.force.myconfig.tools.enable = true= は、通常のmodule definitionで =tools.enable= に強いpriorityを与えるのと同じ目的で使います。
+
+* 8. Home Manager
+
+統合を使う場合は =homeManager= を有効にします。
+
+#+begin_src nix
+homeManager = {
+  enable = true;
+  user = "your_username";
+  useGlobalPkgs = true;
+};
+#+end_src
+
+そのhostの =home= fragmentが、指定したuserのHome Manager moduleとして評価されます。
+
+standalone Home Manager configurationも同時に公開されます。=home-manager= inputが存在すれば =homeConfigurations= が生成され、=homeManager.enable= の有無とは独立しています。
+
+* 9. overlay
+
+overlayは =mulib.overlay= で定義できます。
+
+#+begin_src nix
+{ lib, mulib, ... }:
+mulib.overlay {
+  name = "example-overlay";
+
+  overlay = final: prev: {
+    my-tool = final.writeShellApplication {
+      name = "my-tool";
+      text = ''
+        echo "hello from mulix"
+      '';
+    };
+  };
+}
+#+end_src
+
+=configurations= を通す場合、収集したoverlayはOS configurationに =nixpkgs.overlays= として追加されます。
+
+* 10. 評価する
+
+NixOS configurationを確認する例です。
+
+#+begin_src sh
+nix flake show
+nix build .#nixosConfigurations.your_hostname.config.system.build.toplevel
+#+end_src
+
+Home Manager standaloneを確認する場合は、生成された =homeConfigurations= のキーを使います。
+
+* 11. よくあるミス
+
+** module / hostをraw attrsetで返している
+
+必ず =mulib.module= / =mulib.host= / =mulib.overlay= でdescriptor化します。
+
+** configNameをregistryへ登録していない
+
+receiverの関数引数として使う前に =configNames= へ登録します。
+
+** =host.is= を手書きしている
+
+=host.is= はgenerated stateです。元になる =system=、=type=、=feat=、=role= を指定してください。
+
+** moduleトップレベルで =config= を使っている
+
+=configuration= のcollection phaseではまだNix module systemの =config= はありません。fragmentを関数にしてください。
+
+#+begin_src nix
+os = { config, ... }: {
+  # use config here
+};
+#+end_src
