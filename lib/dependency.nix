@@ -2,11 +2,16 @@
   inherit (builtins) elem;
 
   # modules: normalize.nix の normalizeModule 結果のリスト
-  #   各要素は { name; receiverArgs; send; ... } を持つ
+  #   各要素は { name; receiverArgs; send; sendForce; ... } を持つ
 
   sendersOf = modules: configName:
     map (m: m.name)
-    (builtins.filter (m: (builtins.hasAttr configName (m.send or {}) || builtins.hasAttr configName (m.always.send or {}))) modules);
+    (builtins.filter
+      (m:
+        builtins.hasAttr configName (m.send or {})
+        || builtins.hasAttr configName (m.sendForce or {})
+        || builtins.hasAttr configName (m.always.send or {}))
+      modules);
 
   # receiver は「configName を function 引数として要求している module」。
   # options / target fragment の function args も receiver declaration として

@@ -364,7 +364,7 @@ in rec {
 
     mulibForHost = mulibApi;
     # NixOS module system が提供する引数の stub。
-    # `modulesPath` は host fragment の `os`/`home`/`darwin`/`shared` 内で
+    # `modulesPath` は host fragment の `os`/`home`/`darwin` 内で
     # よく使われる (imports = [ (modulesPath + "/...") ])。collection 時に
     # null を渡すと、thunk に null が焼き込まれ target time に復旧できない。
     # そこで inputs.nixpkgs から real path を構築して渡す。
@@ -444,23 +444,67 @@ in rec {
            mulix reserved args: ${builtins.concatStringsSep ", " reservedArgNames})
         ''
       else true;
+    hostSendModules =
+      lib.imap0
+      (fragmentIndex: fragment: let
+        rawSend = fragment.def.send or {};
+        normalSend = builtins.removeAttrs rawSend ["force"];
+        forceSend = rawSend.force or {};
+        receiverArgs =
+          lib.unique
+          ((lib.concatMap normalizeLib.functionArgsOf (builtins.attrValues normalSend))
+            ++ (lib.concatMap normalizeLib.functionArgsOf (builtins.attrValues forceSend)));
+        hasSend = builtins.attrNames normalSend != [] || builtins.attrNames forceSend != [];
+      in {
+        name = "host:${selectedHostName}:${toString fragmentIndex}";
+        kind = "host";
+        hostName = selectedHostName;
+        send = normalSend;
+        sendForce = forceSend;
+        always = { send = {}; sendForce = {}; };
+        inherit receiverArgs;
+        source =
+          if (fragment.source or null) != null
+          then fragment.source
+          else fragment.label;
+        active = hasSend;
+      })
+      (builtins.filter (f: f.def.name == selectedHostName) hostFragments);
+    activeHostSendModules = builtins.filter (m: m.active or false) hostSendModules;
+    sendGraphModules = normalizedModules ++ activeHostSendModules;
     dependencyGraph = dependencyLib.checkNoCycles {
-      modules = normalizedModules;
+      modules = sendGraphModules;
       configNames = registryNames;
     };
     sendDeclarations =
-      builtins.concatMap
-      (mod:
-        map
-        (configName: {
-          inherit configName;
-          module = mod.name;
-          source = mod.source or null;
-          position = errorsLib.attrPos mod.send configName;
-          alwaysPosition = errorsLib.attrPos mod.always.send configName;
-        })
-        (builtins.attrNames (mod.send // mod.always.send)))
-      normalizedModules;
+      (builtins.concatMap
+        (mod:
+          map
+          (configName: {
+            inherit configName;
+            module = mod.name;
+            source = mod.source or null;
+            position = errorsLib.attrPos mod.send configName;
+            forcePosition = errorsLib.attrPos mod.sendForce configName;
+            alwaysPosition = errorsLib.attrPos mod.always.send configName;
+          })
+          (builtins.attrNames
+            (mod.send // mod.sendForce // mod.always.send)))
+        normalizedModules)
+      ++ (builtins.concatMap
+        (mod:
+          map
+          (configName: {
+            inherit configName;
+            module = mod.name;
+            source = mod.source or null;
+            position = errorsLib.attrPos mod.send configName;
+            forcePosition = errorsLib.attrPos mod.sendForce configName;
+            alwaysPosition = null;
+            alwaysForcePosition = null;
+          })
+          (builtins.attrNames (mod.send // mod.sendForce)))
+        activeHostSendModules);
 
     unknownSendTargets =
       builtins.filter
@@ -469,30 +513,66 @@ in rec {
     _sendCheck =
       if unknownSendTargets != []
       then
+        let
+          renderUnknownSend = c:
+            let
+              position =
+                if c.position != null then c.position
+                else if c.forcePosition != null then c.forcePosition
+                else if c.alwaysPosition != null then c.alwaysPosition
+                else c.alwaysForcePosition;
+              sourceSuffix =
+                if (c.source or null) == null then ""
+                else " [source: ${c.source}]";
+            in
+              "- '${c.configName}' (in module '${c.module}'${sourceSuffix})${errorsLib.formatLocation position}";
+        in
+          throw ''
+            mulix: unknown configName in send
+            module(s) send to configName(s) not declared in the registry:
+              ${lib.concatStringsSep "\n  " (map renderUnknownSend unknownSendTargets)}
+            (all configName must be declared in the registry before use)
+            help: declare the configName in configNames before any module sends to it.
+            help: if this name is a typo, check the configNames registry spelling.
+          ''
+      else true;
+    unknownHostSendReceiverArgs =
+      builtins.concatMap
+      (mod:
+        map
+        (arg: { inherit arg; module = mod.name; source = mod.source or null; })
+        (builtins.filter
+          (arg:
+            !(builtins.elem arg reservedArgNames)
+            && !(builtins.elem arg registryNames))
+          mod.receiverArgs))
+      activeHostSendModules;
+    _hostSendReceiverCheck =
+      if unknownHostSendReceiverArgs != []
+      then
         throw ''
-          mulix: unknown configName in send
-          module(s) send to configName(s) not declared in the registry:
+          mulix: unknown configName in host send function arguments
+          host send function(s) request argument name(s) that are neither
+          mulix built-ins nor declared configNames:
             ${lib.concatStringsSep "\n  "
-            (map (c:
-              "- '${c.configName}' (in module '${c.module}'${if (c.source or null) == null then "" else " [source: ${c.source}]"})${errorsLib.formatLocation (if c.position != null then c.position else c.alwaysPosition)}")
-              unknownSendTargets)}
-          (all configName must be declared in the registry before use)
-          help: declare the configName in configNames before any module sends to it.
-          help: if this name is a typo, check the configNames registry spelling.
+            (map (u: "- '${u.arg}' (in '${u.module}'${if u.source == null then "" else " [source: ${u.source}]"})")
+              unknownHostSendReceiverArgs)}
+          (The receiver argument must be pre-registered in the registry.)
         ''
       else true;
     evalSendValue = {config, contribution, graph}: let
-      # `contribution.module` is the sender's module name, which is exactly the
-      # key of its options; no module lookup is needed (a linear scan per
-      # contribution would be O(N^2) over all senders).
+      # Module send functions receive their module option state as `opt`.
+      # Host send functions have no module option state, so `opt` is absent.
       baseArgs =
         callArgsBase
         // {
-          opt = config.mulix.modules.${contribution.module};
           # Same rule as target fragments: the module system's `pkgs` (with
           # overlays applied) wins over mkMulix's own `pkgs` argument.
           pkgs = config._module.args.pkgs or (callArgsBase.pkgs or null);
         }
+        // (if (contribution.origin or "module") == "host"
+            then {}
+            else { opt = config.mulix.modules.${contribution.module}; })
         // graph;
     in
       if lib.isFunction contribution.value
@@ -535,7 +615,10 @@ in rec {
           map
           (value: {
             inherit (def) file contribution;
-            inherit value;
+            value =
+              if (def.contribution.force or false)
+              then lib.mkForce value
+              else value;
           })
           (dischargeSendProperties def.value))
         defs;
@@ -557,7 +640,10 @@ in rec {
           applySendProperties {
             inherit config graph;
             contributions = builtins.filter
-              (c: (c.always or false) || config.mulix.modules.${c.module}.enable)
+              (c:
+                (c.always or false)
+                || (c.origin or "module") == "host"
+                || config.mulix.modules.${c.module}.enable)
               (sendContributionsFor configName);
           };
         inherit force;
@@ -570,19 +656,39 @@ in rec {
         (lib.optional (builtins.hasAttr configName mod.send) {
           inherit configName;
           module = mod.name;
-          index = mod.index;
+          index =
+            if (mod.kind or "module") == "host"
+            then builtins.length normalizedModules + (mod.index or 0)
+            else mod.index or 0;
           value = mod.send.${configName};
           source = mod.source or null;
+          origin = mod.kind or "module";
+          force = false;
+        })
+        ++ (lib.optional (builtins.hasAttr configName mod.sendForce) {
+          inherit configName;
+          module = mod.name;
+          index =
+            if (mod.kind or "module") == "host"
+            then builtins.length normalizedModules + (mod.index or 0)
+            else mod.index or 0;
+          value = mod.sendForce.${configName};
+          source = mod.source or null;
+          origin = mod.kind or "module";
+          force = true;
         })
         ++ (lib.optional (builtins.hasAttr configName mod.always.send) {
           inherit configName;
           module = mod.name;
-          index = mod.index;
+          index = mod.index or 0;
           value = mod.always.send.${configName};
           source = mod.source or null;
+          origin = mod.kind or "module";
           always = true;
-        }))
-      normalizedModules;
+          force = false;
+        })
+      )
+      sendGraphModules;
 
     # `configGraph` (exported) is the STATIC view of the configName graph.
     #
@@ -609,10 +715,9 @@ in rec {
               value =
                 if lib.isFunction c.value
                 then throw ''
-                  mulix: send.${configName} requires evaluated module options
-                  (`opt`) and therefore cannot be consumed during module
-                  collection. Consume this configName from a target fragment
-                  or another send transformation instead.
+                  mulix: send.${configName} is function-valued and therefore cannot
+                  be consumed during module collection. Consume this configName from
+                  a target fragment or another send transformation instead.
                 ''
                 else c.value;
             })
@@ -656,8 +761,8 @@ in rec {
         # 供給するため、stub を remove して module system 由来の値が使われるようにする。
         ["config" "options" "modulesPath" "osConfig" "_module"];
 
-    # Argument names mulix itself injects into host `os` / `home` / `darwin` /
-    # `shared` function fragments.  Everything else they request (`pkgs`, `lib`,
+    # Argument names mulix itself injects into host `os` / `home` / `darwin`
+    # function fragments. Everything else they request (`pkgs`, `lib`,
     # `modulesPath`, ...) is left to the Nix module system.
     hostFragmentSuppliedArgs =
       lib.unique
@@ -687,8 +792,9 @@ in rec {
       (builtins.seq _registryCheck
       (builtins.seq _receiverCheck
         (builtins.seq _sendCheck
-          (builtins.seq _forceCheck
-            (builtins.seq dependencyGraph true))))))));
+          (builtins.seq _hostSendReceiverCheck
+            (builtins.seq _forceCheck
+              (builtins.seq dependencyGraph true)))))))));
   in
     builtins.seq _checksDone {
       host = hostAttrs;

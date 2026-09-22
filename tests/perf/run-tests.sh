@@ -20,50 +20,71 @@ calls() {
   strategy="$label"
   case "$strategy" in
     ordered)
-      type='T.listOf T.int'; default='[ ]'; send='[ i ]'; read='builtins.length c' ;;
+      type='T.listOf T.int'; default='[ ]'; send=''; read='builtins.length c' ;;
     ordered-fn)
-      # function-valued send that actually reads `opt`
       strategy=ordered
-      type='T.listOf T.int'; default='[ ]'
-      send='{ opt, ... }: [ (if opt.enable then i else 0) ]'; read='builtins.length c' ;;
+      type='T.listOf T.int'; default='[ ]'; send=''; read='builtins.length c' ;;
     *)
-      type='T.attrs'; default='{ }'
-      send='{ "k${toString i}" = { a = i; b = i; }; }'
+      type='T.attrs'; default='{ }'; send='';
       read='builtins.length (builtins.attrNames c)' ;;
   esac
-  # Materialize N sender modules + 1 receiver module as real files in a real
-  # directory, and let `paths` discovery find them the normal way.
-  #
-  # This used to generate each module as a `builtins.toFile` store path and
-  # feed those paths straight to `collectPaths` (bypassing `listNixFiles`'s
-  # directory walk entirely). That relied on the store path being readable
-  # via a plain filesystem stat immediately after `toFile` was forced. It
-  # isn't: a `toFile` store path is only guaranteed to exist on disk once
-  # something has actually *realised* it, which plain `nix-instantiate
-  # --eval` never does, so `entryType`'s `readDir`/`readFileType` (and even
-  # `import`/`readFile`) can hit ENOENT on a path that Nix itself just
-  # computed. Real files sidestep that, and are a closer match for what
-  # `collectPaths`/`listNixFiles` actually handles in production: a
-  # directory of on-disk `.nix` files.
-  #
-  # Filenames are zero-padded so lexicographic sort (what `listNixFiles`
-  # uses) agrees with the intended 0..N module order — required for the
-  # `ordered`/`ordered-fn` strategies to see the modules in the right order
-  # once N passes 9.
-  local moddir width i
-  moddir=$(mktemp -d)
-  width=${#n}
-  i=0
-  while [ "$i" -lt "$n" ]; do
-    printf 'let lib = (import <nixpkgs> {}).lib; wrapper = args@{ __mulixTestModules, ... }: let d = builtins.elemAt args.__mulixTestModules %d; in if lib.isFunction d then d args else d; in lib.setFunctionArgs wrapper { }' \
-      "$i" > "$moddir/mod$(printf "%0${width}d" "$i").nix"
-    i=$((i + 1))
+
+  # `paths` is a filesystem discovery API, so benchmark it with real files.
+  # Do not use builtins.toFile here: the generated file must remain an actual
+  # filesystem entry for collector.listNixFiles/readFileType while the Nix
+  # expression is being evaluated.
+  local module_dir receiver_file i module_body
+  module_dir=$(mktemp -d "$ROOT_DIR/tests/perf/.generated.XXXXXX")
+  trap 'rm -rf "$module_dir"' RETURN
+
+  for ((i = 1; i <= n; i++)); do
+    case "$strategy" in
+      ordered)
+        module_body=$(cat <<EOF
+{ lib, mulib, ... }:
+mulib.module {
+  name = "s${i}";
+  options = { enable = lib.mkOption { type = lib.types.bool; default = true; }; };
+  send.c = [ ${i} ];
+}
+EOF
+)
+        ;;
+      ordered-fn)
+        module_body=$(cat <<EOF
+{ lib, mulib, ... }:
+mulib.module {
+  name = "s${i}";
+  options = { enable = lib.mkOption { type = lib.types.bool; default = true; }; };
+  send.c = { opt, ... }: [ (if opt.enable then ${i} else 0) ];
+}
+EOF
+)
+        ;;
+      *)
+        module_body=$(cat <<EOF
+{ lib, mulib, ... }:
+mulib.module {
+  name = "s${i}";
+  options = { enable = lib.mkOption { type = lib.types.bool; default = true; }; };
+  send.c = { "k${i}" = { a = ${i}; b = ${i}; }; };
+}
+EOF
+)
+        ;;
+    esac
+    printf '%s\n' "$module_body" > "$module_dir/module-${i}.nix"
   done
-  # The receiver ({ c, mulib, ... }: ...) is a function, unlike the senders
-  # (plain mulib.module attrsets), so its wrapper must advertise the same
-  # `functionArgs` shape mulix's static receiver-arg check expects.
-  printf 'let lib = (import <nixpkgs> {}).lib; wrapper = args@{ __mulixTestModules, ... }: let d = builtins.elemAt args.__mulixTestModules %d; in if lib.isFunction d then d args else d; in lib.setFunctionArgs wrapper { c = false; mulib = false; }' \
-    "$n" > "$moddir/mod$(printf "%0${width}d" "$n").nix"
+
+  receiver_file="$module_dir/receiver.nix"
+  cat > "$receiver_file" <<EOF
+{ c, lib, mulib, ... }:
+mulib.module {
+  name = "r";
+  options = { enable = lib.mkOption { type = lib.types.bool; default = true; }; };
+  os.out.n = ${read};
+}
+EOF
 
   stats=$(mktemp)
   local expr
@@ -72,16 +93,12 @@ let
   lib = (import <nixpkgs> {}).lib;
   m = import ./lib { inherit lib; };
   T = lib.types;
-  N = $n;
-  en = { enable = lib.mkOption { type = T.bool; default = true; }; };
-  senders = map (i: m.module { name = "s\${toString i}"; options = en; send.c = $send; }) (lib.range 1 N);
-  receiver = { c, mulib, ... }: mulib.module { name = "r"; options = en; os.out.n = $read; };
   r = m.mkMulix {
     hostDefs.h = m.host { name = "h"; system = "x86_64-linux"; };
-    host = "h"; conditionNames = {};
-    configNames.c = { type = $type; merge = "$strategy"; default = $default; };
-    paths = [ (/. + "$moddir") ];
-    specialArgs.__mulixTestModules = senders ++ [ receiver ];
+    host = "h";
+    conditionNames = {};
+    configNames.c = { type = ${type}; merge = "${strategy}"; default = ${default}; };
+    paths = [ ${module_dir} ];
   };
 in (lib.evalModules {
   modules = (r.targetModuleList "os") ++ [
@@ -90,22 +107,20 @@ in (lib.evalModules {
 }).config.out.n
 EOF
   )
+
   local errfile
   errfile=$(mktemp)
   if ! NIX_SHOW_STATS=1 NIX_SHOW_STATS_PATH="$stats" nix-instantiate --eval --strict --expr "$expr" >/dev/null 2>"$errfile"; then
     echo "perf evaluation failed:" >&2
     cat "$errfile" >&2
     rm -f "$stats" "$errfile"
-    rm -rf "$moddir"
     return 1
   fi
   if [ -s "$stats" ]; then
     grep -oE '"nrFunctionCalls": ?[0-9]+' "$stats" | grep -oE '[0-9]+$'
   fi
   rm -f "$stats" "$errfile"
-  rm -rf "$moddir"
 }
-
 for strategy in single namespaced ordered ordered-fn; do
   a=$(calls "$strategy" "$SMALL"); b=$(calls "$strategy" "$LARGE")
   if [ -z "$a" ] || [ -z "$b" ]; then

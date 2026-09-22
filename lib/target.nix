@@ -156,9 +156,10 @@
     else target;
 
   /*
-  Host configuration fragments (`os` / `home` / `darwin` / `shared` of the
-  merged host) as ordinary module-system modules, so the Nix module system
-  does the merging.  `shared` applies to every target and comes first.
+  Host configuration fragments (`os` / `home` / `darwin` of the merged host)
+  are ordinary module-system modules, so the Nix module system does the merging.
+  Cross-module host values use `send` / `send.force` and therefore do not have
+  a separate direct-injection path.
 
   A function fragment is wrapped so that
     * arguments the module system can supply (`pkgs`, `lib`, `config`,
@@ -192,7 +193,7 @@
   mkHostModules = {hostConfig, target, supplied, specialArgsBase, configGraphForConfig}:
     map
     (f: mkHostFragmentModule {inherit (f) frag; inherit supplied specialArgsBase configGraphForConfig;})
-    (hostConfig.config.shared ++ hostConfig.config.${target});
+    hostConfig.config.${target};
 
   mkTargetModuleList = {
     modules,

@@ -276,14 +276,14 @@ expect_success "11c. a helper file in a discovered directory is ignored" "$PRE"'
 rm "$tmp/modules/helper.nix"
 
 # ===========================================================================
-# Host configuration fragments (os / home / darwin / shared)
+# Host configuration fragments (os / home / darwin)
 # ===========================================================================
 
 expect_success "12h. host os fragments from every file are applied (Inspiron14-5445)" "$PRE"'
   evalT inspiron "os" == {
     disko = "/dev/nvme0n1"; graphics = true; hostname = "inspiron";
     initrd = "PKGS-Inspiron14-5445"; microcode = "amd"; preservation = true;
-    secureboot = true; sharedFromTpm2 = true; tpm2 = true; }
+    secureboot = true; tpm2 = true; }
 '
 
 expect_success "12i. a function fragment gets pkgs from the module system and host from mulix" "$PRE"'
@@ -308,8 +308,47 @@ expect_success "12m. a host fragment can receive a configName as an argument" "$
   }; in (evalT r "os").ports == [ "22/tcp" ]
 '
 
-expect_success "12j. shared applies to every target" "$PRE"'
-  (evalT inspiron "home").sharedFromTpm2 && (evalT inspiron "os").sharedFromTpm2
+expect_failure "12j. shared is no longer a host field" "$PRE"'
+  builtins.deepSeq (H { shared = { out.sharedFromTpm2 = true; }; }) true
+' "unknown field: 'shared'"
+
+expect_failure "12ja. host force.send spelling is rejected" "$PRE"'
+  builtins.deepSeq (H { force.send.hostValue = { marker = true; }; }) true
+' "unknown field: 'force'"
+
+expect_success "12j. host send contributes to the configName graph" "$PRE"'
+  let r = mkM {
+    conditionNames = cn; host = "alpha";
+    configNames.hostValue = { type = T.attrs; merge = "single"; default = {}; };
+    hostDefs.alpha = H { send.hostValue = { marker = true; }; };
+    modules = [
+      (m.module {
+        name = "receiver";
+        options.enable = m.mulibApi.bool.true;
+        os = { hostValue, ... }: { out.marker = hostValue.marker; };
+      })
+    ];
+  };
+  in (evalT r "os").marker == true
+'
+
+expect_success "12jb. host send.force uses the same forced contribution semantics" "$PRE"'
+  let r = mkM {
+    conditionNames = cn; host = "alpha";
+    configNames.hostValue = { type = T.attrs; merge = "single"; default = {}; };
+    hostDefs.alpha = H {
+      send.hostValue = { marker = 1; };
+      send.force.hostValue = { marker = 2; };
+    };
+    modules = [
+      (m.module {
+        name = "receiver";
+        options.enable = m.mulibApi.bool.true;
+        os = { hostValue, ... }: { out.marker = hostValue.marker; };
+      })
+    ];
+  };
+  in (evalT r "os").marker == 2
 '
 
 expect_success "12k. os fragments do not leak into the home target" "$PRE"'

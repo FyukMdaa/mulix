@@ -13,9 +13,23 @@
     feat = ["feat" "features"];
     role = ["role" "roles"];
   };
-  configFields = ["os" "home" "darwin" "shared"];
+  # Target fragments remain host-local configuration.  Cross-module values
+  # are sent through the configName graph via `send`.  `shared` is therefore
+  # intentionally not a host field anymore.
+  configFields = ["os" "home" "darwin"];
   allowedHostFields =
-    ["name"] ++ singleFields ++ listFields ++ ["features" "roles"] ++ configFields;
+    ["name"] ++ singleFields ++ listFields ++ ["features" "roles" "send"] ++ configFields;
+
+  checkSendShape = context: position: value:
+    if builtins.isAttrs value
+    then value
+    else
+      throw ''
+        mulix: invalid host definition
+        location: ${context}${errors.formatLocation position}
+        'send' must be an attrset mapping configName -> contribution,
+        got: ${builtins.typeOf value}
+      '';
 
   parseSystem = system: let
     parts = lib.splitString "-" system;
@@ -159,7 +173,7 @@ in rec {
             mulix: invalid host definition
             host: ${context}
             unknown field: ${builtins.concatStringsSep ", " (map (f: "'${f}'") unknown)}
-            allowed fields: ${builtins.concatStringsSep ", " (["name"] ++ singleFields ++ listFields ++ configFields)}
+            allowed fields: ${builtins.concatStringsSep ", " (["name"] ++ singleFields ++ listFields ++ ["features" "roles" "send"] ++ configFields)}
             ${errors.didYouMean (builtins.head unknown) allowedHostFields}
           ''
         else true;
@@ -218,6 +232,12 @@ in rec {
             listAliases.${field}))
         true
         listFields;
+      sendCheck =
+        checkSendShape "${context}.send" (errors.attrPos host "send") (host.send or {});
+      sendForceCheck =
+        if builtins.hasAttr "force" (host.send or {})
+        then checkSendShape "${context}.send.force" (errors.attrPos (host.send or {}) "force") (host.send.force or {})
+        else true;
       configCheck =
         builtins.foldl'
         (ok: field:
@@ -238,7 +258,9 @@ in rec {
         (builtins.seq nameCheck
           (builtins.seq systemCheck
             (builtins.seq typeCheck
-              (builtins.seq listCheck configCheck)))));
+(builtins.seq listCheck
+                (builtins.seq sendCheck
+                  (builtins.seq sendForceCheck configCheck)))))));
 
   # The public constructor.  The marker is deliberately added here so raw
   # attrsets cannot enter the host registry by accident.

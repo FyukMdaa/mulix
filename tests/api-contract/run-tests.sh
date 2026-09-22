@@ -217,6 +217,31 @@ expect_failure "single rejects overlapping paths" "$PRE"'
   in result.configGraph.foo
 ' "ownership conflict"
 
+expect_failure "module force.send spelling is rejected" "$PRE"'
+  builtins.deepSeq (mkM {
+    hostDefs = { h = m.host { name = "h"; system = "x86_64-linux"; }; };
+    host = "h";
+    conditionNames = {};
+    configNames = { foo = { type = lib.types.attrs; merge = "single"; }; };
+    modules = [ (m.module { name = "forced"; force.send.foo = { value = 2; }; }) ];
+  }) true
+' "invalid module definition"
+
+expect_success "send.force is the canonical forced-send namespace" "$PRE"'
+  let
+    result = mkM {
+      hostDefs = { h = m.host { name = "h"; system = "x86_64-linux"; }; };
+      host = "h";
+      conditionNames = {};
+      configNames = { foo = { type = lib.types.attrs; merge = "single"; }; };
+      modules = [
+        (m.module { name = "normal"; send.foo = { value = 1; }; })
+        (m.module { name = "forced"; send.force.foo = { value = 2; }; })
+      ];
+    };
+  in result.configGraph.foo.value == 2
+'
+
 expect_success "send supports mkForce priority" "$PRE"'
   let
     result = mkM {

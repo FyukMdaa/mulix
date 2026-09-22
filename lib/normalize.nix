@@ -36,7 +36,8 @@
   fragment (always.<target>, os, home, darwin):
     Nix module fragment として扱うため attrset または function
   send:
-    configName -> contribution の attrset
+    configName -> contribution の attrset。`send.force` は強制 contribution の
+    特殊名前空間として扱い、正規化後は `sendForce` に分離される。
   */
   checkFragmentValue = context: position: value:
     if builtins.isAttrs value || lib.isFunction value
@@ -186,17 +187,29 @@ in rec {
     # Each target is normalized independently so omitted targets become {}.
     # This is important because later dependency discovery accesses all three
     # target keys unconditionally.
+    alwaysSendRaw = alwaysRaw.send or {};
     alwaysChecked = {
       os = checkFragmentValue "${contextWithSource}.always.os" (errors.attrPos alwaysRaw "os") (alwaysRaw.os or {});
       home = checkFragmentValue "${contextWithSource}.always.home" (errors.attrPos alwaysRaw "home") (alwaysRaw.home or {});
       darwin = checkFragmentValue "${contextWithSource}.always.darwin" (errors.attrPos alwaysRaw "darwin") (alwaysRaw.darwin or {});
-      send = checkSendShape "${contextWithSource}.always.send" (errors.attrPos alwaysRaw "send") (alwaysRaw.send or {});
+      send = checkSendShape "${contextWithSource}.always.send" (errors.attrPos alwaysRaw "send") alwaysSendRaw;
     };
 
     osChecked = checkFragmentValue "${contextWithSource}.os" (errors.attrPos cleanMod "os") (cleanMod.os or {});
     homeChecked = checkFragmentValue "${contextWithSource}.home" (errors.attrPos cleanMod "home") (cleanMod.home or {});
     darwinChecked = checkFragmentValue "${contextWithSource}.darwin" (errors.attrPos cleanMod "darwin") (cleanMod.darwin or {});
-    sendChecked = checkSendShape "${contextWithSource}.send" (errors.attrPos cleanMod "send") (cleanMod.send or {});
+    sendRaw = cleanMod.send or {};
+    sendForceRaw =
+      if builtins.isAttrs sendRaw
+      then sendRaw.force or {}
+      else {};
+    _sendForceShapeCheck =
+      if builtins.isAttrs sendRaw && builtins.hasAttr "force" sendRaw
+      then checkSendShape "${contextWithSource}.send.force" (errors.attrPos sendRaw "force") sendForceRaw
+      else true;
+    sendChecked =
+      checkSendShape "${contextWithSource}.send" (errors.attrPos cleanMod "send")
+        (if builtins.isAttrs sendRaw then builtins.removeAttrs sendRaw ["force"] else sendRaw);
 
     /*
     shape 検査の発火保証。
@@ -227,6 +240,7 @@ in rec {
       ++ (functionArgsOf alwaysChecked.darwin);
     sendDeclaredArgs =
       (lib.concatMap functionArgsOf (builtins.attrValues sendChecked))
+      ++ (lib.concatMap functionArgsOf (builtins.attrValues sendForceRaw))
       ++ (lib.concatMap functionArgsOf (builtins.attrValues alwaysChecked.send));
     receiverArgs =
       lib.unique
@@ -247,12 +261,14 @@ in rec {
       home = homeChecked;
       darwin = darwinChecked;
       send = sendChecked;
+      sendForce = sendForceRaw;
     };
   in
     builtins.seq descriptorCheck
     (builtins.seq _nameCheck
       (builtins.seq _shapeCheck
-        (builtins.seq _alwaysShapeCheck result)));
+        (builtins.seq _alwaysShapeCheck
+          (builtins.seq _sendForceShapeCheck result))));
 
   inherit allowedTargets;
 }
