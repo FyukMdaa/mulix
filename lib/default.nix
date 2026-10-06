@@ -66,8 +66,21 @@
   # in Nix are mutually recursive.
   mkMulix =
     (import ./mk-mulix.nix {
-      inherit lib mulibApi mulixReservedArgs hostsLib collectorLib normalizeLib
-        configGraphLib dependencyLib targetLib overlaysLib diagnosticsLib errorsLib;
+      inherit
+        lib
+        inputs
+        mulibApi
+        mulixReservedArgs
+        hostsLib
+        collectorLib
+        normalizeLib
+        configGraphLib
+        dependencyLib
+        targetLib
+        overlaysLib
+        diagnosticsLib
+        errorsLib
+        ;
     }).mkMulix;
 
   # ---- mulibApi ---------------------------------------------------------
@@ -75,11 +88,10 @@
   # let-binding that holds the constructors + `mulibApi`; we extract
   # each member individually so the public `rec` block can re-export
   # them by name.
-  api =
-    import ./api.nix {
-      inherit lib hostsLib optionShorthands overlaysLib diagnosticsLib graphLib;
-      inherit mkMulix;
-    };
+  api = import ./api.nix {
+    inherit lib hostsLib optionShorthands overlaysLib diagnosticsLib graphLib;
+    inherit mkMulix;
+  };
   inherit (api) module host overlay mulibApi;
 
   # ---- configurations --------------------------------------------------
@@ -90,7 +102,7 @@
   # collector / normalizer helpers.
   configurations =
     (import ./configurations.nix {
-      inherit lib mulibApi mkMulix normalizeLib collectorLib;
+      inherit lib pkgs inputs mulibApi mkMulix normalizeLib collectorLib;
     }).configurations;
 
   # Convenience alias kept from the original API: `runDiagnostics` is a

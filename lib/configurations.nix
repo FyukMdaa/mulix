@@ -13,6 +13,8 @@
 #   assignment is preserved byte-for-byte.
 {
   lib,
+  pkgs,
+  inputs ? {},
   mulibApi,
   mkMulix,
   normalizeLib,
@@ -55,14 +57,15 @@
   }: let
     homeManagerConfig =
       if builtins.isBool homeManager
-      then { enable = homeManager; }
+      then {enable = homeManager;}
       else if builtins.isAttrs homeManager
       then homeManager
-      else throw ''
-        mulix: invalid homeManager input
-        expected a bool or attrset, got: ${builtins.typeOf homeManager}
-        (configurations input)
-      '';
+      else
+        throw ''
+          mulix: invalid homeManager input
+          expected a bool or attrset, got: ${builtins.typeOf homeManager}
+          (configurations input)
+        '';
     homeManagerEnabled = homeManagerConfig.enable or false;
     homeManagerUseGlobalPkgs = homeManagerConfig.useGlobalPkgs or true;
     effectiveHomeManagerUser =
@@ -71,23 +74,26 @@
       else homeManagerUser;
     _homeManagerShapeCheck =
       if !(builtins.isBool homeManagerEnabled)
-      then throw ''
-        mulix: invalid homeManager.enable input
-        expected a boolean, got: ${builtins.typeOf homeManagerEnabled}
-        (configurations input)
-      ''
+      then
+        throw ''
+          mulix: invalid homeManager.enable input
+          expected a boolean, got: ${builtins.typeOf homeManagerEnabled}
+          (configurations input)
+        ''
       else if !(builtins.isBool homeManagerUseGlobalPkgs)
-      then throw ''
-        mulix: invalid homeManager.useGlobalPkgs input
-        expected a boolean, got: ${builtins.typeOf homeManagerUseGlobalPkgs}
-        (configurations input)
-      ''
+      then
+        throw ''
+          mulix: invalid homeManager.useGlobalPkgs input
+          expected a boolean, got: ${builtins.typeOf homeManagerUseGlobalPkgs}
+          (configurations input)
+        ''
       else if effectiveHomeManagerUser != null && !(builtins.isString effectiveHomeManagerUser)
-      then throw ''
-        mulix: invalid Home Manager user
-        expected a string or null, got: ${builtins.typeOf effectiveHomeManagerUser}
-        (configurations input)
-      ''
+      then
+        throw ''
+          mulix: invalid Home Manager user
+          expected a string or null, got: ${builtins.typeOf effectiveHomeManagerUser}
+          (configurations input)
+        ''
       else true;
     # ---- fleet discovery ------------------------------------------------
     # `configurations` は全 host を一度にビルドする必要があるが、`mkMulix` は
@@ -101,48 +107,60 @@
     # NixOS module system が提供する引数 (modulesPath, osConfig, ...) も
     # stub として渡す。host fragment のトップレベルではこれらを使わない
     # (os/home/darwin フラグメントの中で使う) ので、null で十分。
-    fleetHostNames =
-      let
-        pathEntries = collectorLib.collectPaths paths;
-        # NixOS module system が提供する引数の stub。host fragment の関数が
-        # これらを要求しても throw しないようにする。実際の値は target time
-        # に module system から注入される。
-        nixosStubArgs = lib.genAttrs [
-          "modulesPath" "osConfig" "_module"
-        ] (_: null);
-        discoveryConfigNames = lib.genAttrs (builtins.attrNames configNames) (name:
-          throw ''
-            mulix: configName '${name}' is not available during fleet discovery
-            A configName is injected after the target module-system fixpoint is built.
-          '');
-        discoveryArgs =
-          specialArgs
-          // nixosStubArgs
-          // discoveryConfigNames
-          // {
-            mulib = mulibApi;
-            host = throw "mulix: 'host' is not available during fleet discovery";
-            inherit pkgs lib inputs;
-            config = throw "mulix: 'config' is not available during fleet discovery";
-            options = throw "mulix: 'options' is not available during fleet discovery";
-            inherit (mulibApi) types mkOption mkEnableOption mkIf mkMerge mkDefault mkForce
-              mkOverride mkOrder mkBefore mkAfter;
-          };
-        calledFromPaths =
-          lib.filter (x: x != null)
-          (map
-            (e:
-              let
-                def = import e.path;
-                called = normalizeLib.callModule "at ${e.label}" discoveryArgs def;
-              in
-                if builtins.isAttrs called && (called._mulixKind or null) == "host"
-                then called.name
-                else null)
-            pathEntries);
-        fromHostDefs = builtins.attrNames hostDefs;
-      in
-        lib.unique (calledFromPaths ++ fromHostDefs);
+    fleetHostNames = let
+      pathEntries = collectorLib.collectPaths paths;
+      # NixOS module system が提供する引数の stub。host fragment の関数が
+      # これらを要求しても throw しないようにする。実際の値は target time
+      # に module system から注入される。
+      nixosStubArgs = lib.genAttrs [
+        "modulesPath"
+        "osConfig"
+        "_module"
+      ] (_: null);
+      discoveryConfigNames = lib.genAttrs (builtins.attrNames configNames) (name:
+        throw ''
+          mulix: configName '${name}' is not available during fleet discovery
+          A configName is injected after the target module-system fixpoint is built.
+        '');
+      discoveryArgs =
+        specialArgs
+        // nixosStubArgs
+        // discoveryConfigNames
+        // {
+          mulib = mulibApi;
+          host = throw "mulix: 'host' is not available during fleet discovery";
+          inherit pkgs lib inputs;
+          config = throw "mulix: 'config' is not available during fleet discovery";
+          options = throw "mulix: 'options' is not available during fleet discovery";
+          inherit
+            (mulibApi)
+            types
+            mkOption
+            mkEnableOption
+            mkIf
+            mkMerge
+            mkDefault
+            mkForce
+            mkOverride
+            mkOrder
+            mkBefore
+            mkAfter
+            ;
+        };
+      calledFromPaths =
+        lib.filter (x: x != null)
+        (map
+          (e: let
+            def = import e.path;
+            called = normalizeLib.callModule "at ${e.label}" discoveryArgs def;
+          in
+            if builtins.isAttrs called && (called._mulixKind or null) == "host"
+            then called.name
+            else null)
+          pathEntries);
+      fromHostDefs = builtins.attrNames hostDefs;
+    in
+      lib.unique (calledFromPaths ++ fromHostDefs);
 
     # pkgs を引く helper
     pkgsOf = system:
@@ -158,31 +176,35 @@
     # 各 host について mkMulix を呼ぶ
     # host の system から pkgs を引いて渡す。これにより module トップレベルで
     # `pkgs` を要求する module が collection 時に正しい pkgs を参照できる。
-    rawPerHost = builtins.listToAttrs (map (hostName:
-      let
-        # fleet discovery で取得した host 名から system を引くため、
-        # 一度 mkMulix を host 指定で呼んで host.system を取り出す必要があるが、
-        # それだと2回評価することになる。代わりに paths/hostDefs から
-        # host fragment を評価して system を取り出す。
-        # 簡易的に、mkMulix を pkgs=null で1回呼んで host.system を取得し、
-        # その system から pkgs を引いて再度 mkMulix を呼ぶ。
-        # ただし Nix の laziness により、host.system に依存しない部分は
-        # 1回しか評価されないので、実質的なオーバーヘッドは少ない。
-        r0 = mkMulix {
-          inherit paths hostDefs overlays conditionNames configNames force specialArgs;
-          host = hostName;
-        };
-        system = r0.host.system or null;
-        hostPkgs = if system != null then pkgsOf system else null;
-      in {
-        name = hostName;
-        value = mkMulix {
-          inherit paths hostDefs overlays conditionNames configNames force specialArgs;
-          host = hostName;
-          pkgs = hostPkgs;
-        };
-      }
-    ) fleetHostNames);
+    rawPerHost = builtins.listToAttrs (map (
+        hostName: let
+          # fleet discovery で取得した host 名から system を引くため、
+          # 一度 mkMulix を host 指定で呼んで host.system を取り出す必要があるが、
+          # それだと2回評価することになる。代わりに paths/hostDefs から
+          # host fragment を評価して system を取り出す。
+          # 簡易的に、mkMulix を pkgs=null で1回呼んで host.system を取得し、
+          # その system から pkgs を引いて再度 mkMulix を呼ぶ。
+          # ただし Nix の laziness により、host.system に依存しない部分は
+          # 1回しか評価されないので、実質的なオーバーヘッドは少ない。
+          r0 = mkMulix {
+            inherit paths hostDefs overlays conditionNames configNames force specialArgs;
+            host = hostName;
+          };
+          system = r0.host.system or null;
+          hostPkgs =
+            if system != null
+            then pkgsOf system
+            else null;
+        in {
+          name = hostName;
+          value = mkMulix {
+            inherit paths hostDefs overlays conditionNames configNames force specialArgs;
+            host = hostName;
+            pkgs = hostPkgs;
+          };
+        }
+      )
+      fleetHostNames);
 
     # host の system から linux / darwin を判別
     isLinux = r: let sys = r.host.system or null; in sys != null && (builtins.match ".*-linux" sys) != null;
@@ -217,85 +239,107 @@
       if !homeManagerEnabled
       then []
       else if effectiveHomeManagerUser == null
-      then throw ''
-        mulix: homeManager integration is enabled for NixOS, but no user was specified.
-        Set `homeManager.user` (or the legacy `homeManagerUser`) in `configurations`.
-      ''
+      then
+        throw ''
+          mulix: homeManager integration is enabled for NixOS, but no user was specified.
+          Set `homeManager.user` (or the legacy `homeManagerUser`) in `configurations`.
+        ''
       else if !(inputs ? home-manager)
-      then throw ''
-        mulix: homeManager integration is enabled, but `inputs.home-manager` is missing.
-      ''
+      then
+        throw ''
+          mulix: homeManager integration is enabled, but `inputs.home-manager` is missing.
+        ''
       else if !(inputs.home-manager ? nixosModules) || !(inputs.home-manager.nixosModules ? home-manager)
-      then throw ''
-        mulix: `inputs.home-manager.nixosModules.home-manager` is missing.
-      ''
-      else [{
-        imports = [ inputs.home-manager.nixosModules.home-manager ];
-        home-manager.useGlobalPkgs = homeManagerUseGlobalPkgs;
-        home-manager.extraSpecialArgs = specialArgs // { inherit inputs; };
-        home-manager.users.${effectiveHomeManagerUser}.imports =
-          (r.targetModuleList "home") ++ extraHomeModules;
-      }];
+      then
+        throw ''
+          mulix: `inputs.home-manager.nixosModules.home-manager` is missing.
+        ''
+      else [
+        {
+          imports = [inputs.home-manager.nixosModules.home-manager];
+          home-manager.useGlobalPkgs = homeManagerUseGlobalPkgs;
+          home-manager.extraSpecialArgs = specialArgs // {inherit inputs;};
+          home-manager.users.${effectiveHomeManagerUser}.imports =
+            (r.targetModuleList "home") ++ extraHomeModules;
+        }
+      ];
 
     homeManagerDarwinModuleFor = r:
       if !homeManagerEnabled
       then []
       else if effectiveHomeManagerUser == null
-      then throw ''
-        mulix: homeManager integration is enabled for nix-darwin, but no user was specified.
-        Set `homeManager.user` (or the legacy `homeManagerUser`) in `configurations`.
-      ''
+      then
+        throw ''
+          mulix: homeManager integration is enabled for nix-darwin, but no user was specified.
+          Set `homeManager.user` (or the legacy `homeManagerUser`) in `configurations`.
+        ''
       else if !(inputs ? home-manager)
-      then throw ''
-        mulix: homeManager integration is enabled, but `inputs.home-manager` is missing.
-      ''
+      then
+        throw ''
+          mulix: homeManager integration is enabled, but `inputs.home-manager` is missing.
+        ''
       else if !(inputs.home-manager ? darwinModules) || !(inputs.home-manager.darwinModules ? home-manager)
-      then throw ''
-        mulix: `inputs.home-manager.darwinModules.home-manager` is missing.
-      ''
-      else [{
-        imports = [ inputs.home-manager.darwinModules.home-manager ];
-        home-manager.useGlobalPkgs = homeManagerUseGlobalPkgs;
-        home-manager.extraSpecialArgs = specialArgs // { inherit inputs; };
-        home-manager.users.${effectiveHomeManagerUser}.imports =
-          (r.targetModuleList "home") ++ extraHomeModules;
-      }];
+      then
+        throw ''
+          mulix: `inputs.home-manager.darwinModules.home-manager` is missing.
+        ''
+      else [
+        {
+          imports = [inputs.home-manager.darwinModules.home-manager];
+          home-manager.useGlobalPkgs = homeManagerUseGlobalPkgs;
+          home-manager.extraSpecialArgs = specialArgs // {inherit inputs;};
+          home-manager.users.${effectiveHomeManagerUser}.imports =
+            (r.targetModuleList "home") ++ extraHomeModules;
+        }
+      ];
 
     _integratedHomeManagerCheck = builtins.seq _homeManagerShapeCheck true;
 
     # NixOS configurations (linux host のみ)
-    nixosConfigurations = builtins.seq _integratedHomeManagerCheck
-      (builtins.listToAttrs (lib.filter (x: x != null) (lib.mapAttrsToList (hostName: r:
-      if isLinux r
-      then {
-        name = hostName;
-        value = nixosSystemFn {
-          system = r.host.system;
-          modules = (r.targetModuleList "os") ++ [
-            r.overlayModule
-          ] ++ extraNixosModules ++ (homeManagerNixosModuleFor r);
-          specialArgs = specialArgs // { inherit inputs; };
-        };
-      }
-      else null
-    ) rawPerHost)));
+    nixosConfigurations =
+      builtins.seq _integratedHomeManagerCheck
+      (builtins.listToAttrs (lib.filter (x: x != null) (lib.mapAttrsToList (
+          hostName: r:
+            if isLinux r
+            then {
+              name = hostName;
+              value = nixosSystemFn {
+                system = r.host.system;
+                modules =
+                  (r.targetModuleList "os")
+                  ++ [
+                    r.overlayModule
+                  ]
+                  ++ extraNixosModules ++ (homeManagerNixosModuleFor r);
+                specialArgs = specialArgs // {inherit inputs;};
+              };
+            }
+            else null
+        )
+        rawPerHost)));
 
     # nix-darwin configurations (darwin host のみ)
-    darwinConfigurations = builtins.seq _integratedHomeManagerCheck
-      (builtins.listToAttrs (lib.filter (x: x != null) (lib.mapAttrsToList (hostName: r:
-      if isDarwin r
-      then {
-        name = hostName;
-        value = darwinSystemFn {
-          system = r.host.system;
-          modules = (r.targetModuleList "darwin") ++ [
-            r.overlayModule
-          ] ++ extraDarwinModules ++ (homeManagerDarwinModuleFor r);
-          specialArgs = specialArgs // { inherit inputs; };
-        };
-      }
-      else null
-    ) rawPerHost)));
+    darwinConfigurations =
+      builtins.seq _integratedHomeManagerCheck
+      (builtins.listToAttrs (lib.filter (x: x != null) (lib.mapAttrsToList (
+          hostName: r:
+            if isDarwin r
+            then {
+              name = hostName;
+              value = darwinSystemFn {
+                system = r.host.system;
+                modules =
+                  (r.targetModuleList "darwin")
+                  ++ [
+                    r.overlayModule
+                  ]
+                  ++ extraDarwinModules ++ (homeManagerDarwinModuleFor r);
+                specialArgs = specialArgs // {inherit inputs;};
+              };
+            }
+            else null
+        )
+        rawPerHost)));
 
     # Home Manager standalone configurations (全 host)
     # homeManagerUser が指定された場合はそのユーザ名をキーに、
@@ -303,20 +347,28 @@
     homeConfigurations =
       if homeManagerConfigurationFn == null
       then {}
-      else builtins.listToAttrs (lib.mapAttrsToList (hostName: r:
-        let
-          key = if effectiveHomeManagerUser != null then effectiveHomeManagerUser else hostName;
-        in {
-          name = key;
-          value = homeManagerConfigurationFn {
-            pkgs = pkgsOf r.host.system;
-            modules = (r.targetModuleList "home") ++ [
-              r.overlayModule
-            ] ++ extraHomeModules;
-            extraSpecialArgs = specialArgs // { inherit inputs; };
-          };
-        }
-      ) rawPerHost);
+      else
+        builtins.listToAttrs (lib.mapAttrsToList (
+            hostName: r: let
+              key =
+                if effectiveHomeManagerUser != null
+                then effectiveHomeManagerUser
+                else hostName;
+            in {
+              name = key;
+              value = homeManagerConfigurationFn {
+                pkgs = pkgsOf r.host.system;
+                modules =
+                  (r.targetModuleList "home")
+                  ++ [
+                    r.overlayModule
+                  ]
+                  ++ extraHomeModules;
+                extraSpecialArgs = specialArgs // {inherit inputs;};
+              };
+            }
+          )
+          rawPerHost);
   in {
     inherit nixosConfigurations darwinConfigurations homeConfigurations;
     # diagnostics / graph 用に mkMulix 結果も露出

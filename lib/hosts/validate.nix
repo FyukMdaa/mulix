@@ -11,8 +11,10 @@
 # `./constants.nix` and `inherit`s the names it needs so the function
 # bodies are unchanged from the original monolithic file.
 {lib}: let
+  inherit (builtins) elem;
   constants = import ./constants.nix {inherit lib;};
-  inherit (constants)
+  inherit
+    (constants)
     errors
     singleFields
     listFields
@@ -219,5 +221,4 @@ in rec {
       marked = hostConfig // {_mulixKind = "host";};
     in
       builtins.seq (validateHost (hostConfig.name or "<unnamed>") marked) marked;
-
 }

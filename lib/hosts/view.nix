@@ -12,8 +12,10 @@
 # `./validate.nix`, `composeHostDefs` from `./compose.nix`, and the
 # system-flag helpers from `./constants.nix`.
 {lib}: let
+  inherit (builtins) elem;
   constants = import ./constants.nix {inherit lib;};
-  inherit (constants)
+  inherit
+    (constants)
     systemFlags
     typeNamesOf
     generatedIsNames
@@ -130,6 +132,4 @@ in rec {
       composed = composeHostDefs hosts;
       inherit conditionNames hostName;
     };
-
-
 }

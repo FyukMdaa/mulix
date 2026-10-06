@@ -12,7 +12,7 @@
 # composition, view, and sources sub-modules can each import exactly
 # the names they need without re-deriving them.
 {lib}: let
-  errors = import ./errors.nix {inherit lib;};
+  errors = import ../errors.nix {inherit lib;};
   inherit (builtins) elem;
 
   # `type`, `feat`, and `role` names are intentionally unrestricted.  They are
@@ -92,7 +92,6 @@
     else "(in-memory definition)";
 
   quote = v: builtins.toJSON v;
-
 in rec {
   inherit
     errors

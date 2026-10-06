@@ -16,9 +16,7 @@
 #   - Append it here.
 #   - Update `docs/ja/reference.org` if it is a public argument.
 #   - Update `lib/api.nix` `mulibApi` if it should be reachable via `mulib`.
-{
-  lib,
-}: let
+{lib}: let
   /*
   Canonical module-function namespace reserved by mulix.
 
@@ -70,5 +68,5 @@ in {
   # part of the reserved namespace at mkMulix time. Exported so callers
   # can compute `reservedArgNames` without duplicating the logic.
   reservedArgNames = extra:
-    lib.unique (mulixReservedArgs ++ builtins.attrNames (extra or {}));
+    lib.unique (mulixReservedArgs ++ builtins.attrNames extra);
 }
