@@ -1,15 +1,26 @@
 {
   lib,
-  reservedArgs,
+  # `reservedArgs` is now optional. When omitted, diagnostics imports the
+  # canonical list from `lib/reserved-args.nix` directly. This removes the
+  # parameter-passing smell where `default.nix` had to thread the list
+  # through, and makes direct callers (e.g. tests) simpler. The parameter
+  # is kept so any existing caller that overrides the canonical list still
+  # works.
+  reservedArgs ? null,
 }: let
   inherit (builtins) isAttrs isList elem;
   errorsLib = import ./errors.nix {inherit lib;};
   hostsLib = import ./hosts.nix {inherit lib;};
 
-  # The canonical reserved namespace is owned by default.nix and injected here.
-  # Do not duplicate the list: registry validation and diagnostics must use the
-  # exact same namespace.
-  mulixReservedArgs = reservedArgs;
+  # The canonical reserved namespace lives in `lib/reserved-args.nix`.
+  # Both `default.nix` and this file import it from there so the two
+  # cannot drift out of sync. An explicit `reservedArgs` argument still
+  # wins over the canonical import, which is what the differential tests
+  # and any direct caller that needs a tweaked namespace rely on.
+  mulixReservedArgs =
+    if reservedArgs != null
+    then reservedArgs
+    else (import ./reserved-args.nix {inherit lib;}).mulixReservedArgs;
 
   mkReport = severity: rule: module: source: message: {
     inherit severity rule module source message;

@@ -1,0 +1,20 @@
+# ---- Nix ----
+# Build artefacts from `nix build` / `nix profile` / etc.
+result
+result-*
+
+# GC roots created by `nix build --out-link` and similar
+*.drv
+*.drv-link
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Temporary / scratch ----
+.cache/
+tmp/
+*.tmp
+*.log
+*.zip

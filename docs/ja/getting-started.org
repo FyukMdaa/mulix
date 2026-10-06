@@ -44,7 +44,7 @@ nix flake init -t github:fyukmdaa/mulix#minimal
         specialArgs = { inherit inputs; };
 
         homeManager = {
-          enable = true;
+          enable = true;  #←home-managerをnixosのビルド時に同時にビルドする場合
           user = "your_username";
         };
       };
