@@ -843,7 +843,7 @@
         inherit target;
         specialArgsBase = targetArgsFor target;
         configGraphForConfig = configGraphForConfig;
-        configGraphForOptions = _: configGraphThunk;
+        configGraphForOptions = configGraphForConfig;
         moduleOptionOf = moduleOptionOf;
         hostConfig = hostDef;
         supplied = hostFragmentSuppliedArgs;
