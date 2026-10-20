@@ -1,5 +1,7 @@
 {lib}: let
   inherit (builtins) elem;
+  overlap = import ./config-graph/overlap.nix {inherit lib;};
+  inherit (overlap) sendStaticPaths;
 
   # modules: normalize.nix の normalizeModule 結果のリスト
   #   各要素は { name; receiverArgs; send; sendForce; ... } を持つ
@@ -21,6 +23,47 @@
     (builtins.filter (m: elem configName (m.receiverArgs or m.declaredArgs or [])) modules);
 
   /*
+  sendInfoOf: module m が configName に書き込む leaf path の集合
+  (リスト)。書き込みpathを静的に決定できない場合は null。
+
+  null になるのは:
+    - send / sendForce / always.send のいずれかが「全体関数 send」
+      (contribution 全体が関数。書き込みpathは呼ぶまで未知)
+    - 値の途中に module system の property wrapper (mkIf 等) がある
+      (条件の評価を強制しないために構造を辿らない)
+
+  リーフ関数 (derived contribution, `send.<configName>.<path...> = fn`) は
+  ネストキーで書き込みpathが宣言されるため既知pathとして扱う。
+  */
+  sendInfoOf = m: configName: let
+    topVals =
+      lib.concatMap
+      (set:
+        lib.optional
+        (builtins.hasAttr configName set)
+        set.${configName})
+      [(m.send or {}) (m.sendForce or {}) (m.always.send or {})];
+    ctx = "configName '${configName}' (module '${m.name}')";
+  in
+    if topVals == []
+    then null
+    else if builtins.any lib.isFunction topVals
+    then null
+    else let
+      # tryEval: walking a send value forces its structure, and a leaf may
+      # reference the module's own configName argument (or anything else
+      # that throws / recurses when forced this early).  Such a value cannot
+      # be analysed, so fall back to "unknown writes", which preserves the
+      # self-loop error for the receiving module and defers the real error
+      # to evaluation.
+      pathSets =
+        map (v: builtins.tryEval (sendStaticPaths ctx [] v)) topVals;
+    in
+      if builtins.any (p: !p.success || p.value == null) pathSets
+      then null
+      else lib.unique (builtins.concatLists (map (p: p.value) pathSets));
+
+  /*
   buildGraph: modules から configName-registry のキー一覧を使って
   edge 集合 (sender -> configName -> receiver) を構築する。
 
@@ -29,6 +72,13 @@
     「niri → wmconfig → waybar」 は
       { from = "niri"; to = "waybar"; via = "wmconfig"; } として
     1本の module-to-module edge に圧縮する。
+
+  自己フィード (同一 module が同一 configName に send し、かつ受信する) は、
+  その send の書き込みpathが静的に既知 (plain data または derived leaf
+  function) であれば edge を張らない。静的な contribution は解決済み値を
+  読まないため、自己受信しても再帰は起きない。書き込みpathが未知の
+  (全体関数 send / property wrapper を含む値の) み自己エッジとして
+  検出対象にする。
   */
   buildGraph = {
     modules,
@@ -37,17 +87,41 @@
     edges =
       lib.concatMap
       (configName: let
-        senders = sendersOf modules configName;
+        senderModules =
+          builtins.filter
+          (m:
+            builtins.hasAttr configName (m.send or {})
+            || builtins.hasAttr configName (m.sendForce or {})
+            || builtins.hasAttr configName (m.always.send or {}))
+          modules;
+        senderInfo =
+          map (m: {
+            name = m.name;
+            info = sendInfoOf m configName;
+          })
+          senderModules;
         receivers = receiversOf modules configName;
       in
         lib.concatMap
-        (from:
-          map (to: {
-            inherit from to;
-            via = configName;
-          })
+        (s:
+          lib.concatMap
+          (to:
+            if s.name == to
+            then
+              lib.optional (s.info == null) {
+                from = s.name;
+                to = to;
+                via = configName;
+              }
+            else [
+              {
+                from = s.name;
+                inherit to;
+                via = configName;
+              }
+            ])
           receivers)
-        senders)
+        senderInfo)
       configNames;
   in {inherit edges;};
 
@@ -208,7 +282,13 @@
       (lib.imap0 (i: _: hop i) vias)
       + " ${builtins.head cycle}";
     # A -> A: the same module name is both ends of the edge, i.e. the module
-    # sends and receives the same configName.  This is an error by design.
+    # sends and receives the same configName, and at least one of its sends
+    # has statically unknown write paths (a whole-contribution function, or a
+    # value containing a property wrapper).  Such a send is applied with the
+    # resolved value -- including its own contribution -- so depending on it
+    # from the same module risks infinite recursion.  Plain data sends and
+    # derived leaf-function sends (write paths declared by nesting) are
+    # allowed to self-feed and never reach this error.
     isSelfDependency =
       builtins.length cycle
       == 2
@@ -216,8 +296,13 @@
     selfDetail = ''
       module '${builtins.head cycle}' depends on itself: it both sends and receives configName '${builtins.head vias}'.
       The same module name appears more than once in the cycle, which is not allowed.
-      help: receive the configName in a different module (module names must be unique),
-      help: or remove the receiving argument from this module.
+      This is reported because at least one send of this module to this configName
+      is a whole-contribution function (or contains a property wrapper such as
+      mkIf), so its write paths cannot be determined statically and it reads the
+      resolved value including its own contribution.
+      help: send plain data, or declare a derived contribution by nesting the
+      help: function under an explicit path (send.<configName>.<path...> = fn),
+      help: or receive the configName in a different module (module names must be unique).
     '';
     headline = "mulix: dependency cycle detected";
   in ''
@@ -246,6 +331,7 @@ in {
   inherit
     sendersOf
     receiversOf
+    sendInfoOf
     buildGraph
     detectCycles
     detectCyclesDfs

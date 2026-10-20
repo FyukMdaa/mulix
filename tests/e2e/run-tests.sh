@@ -132,6 +132,116 @@ expect_success "send -> send chain" "$PRE"'
   }).out.b == [ "x!" ]
 '
 
+# ---------------------------------------------------------------------------
+# Phase 1: a module may send static values to a configName it also receives
+# (self-feed).  The static contribution does not read the resolved value, so
+# receiving it cannot recurse.  This is the "wofi reads wmconfig.launcher,
+# writes wmconfig.launchercmd" pattern.
+# ---------------------------------------------------------------------------
+
+expect_success "self-feed: static send + receive of the same configName" "$PRE"'
+  (run {
+    configNames.wm = { type = T.attrs; merge = "single"; default = { bar = "none"; }; };
+    modules = [
+      (m.module { name = "wm"; options = en; send.wm = { bar = "waybar"; launcher = "wofi"; }; })
+      (m.module {
+        name = "wofi";
+        options = { wm, ... }: { enable = lib.mkOption { type = T.bool; default = wm.launcher == "wofi"; }; };
+        send.wm.launchercmd = "wofi show drun";
+        os = { wm, ... }: { out.wofi = lib.mkIf (wm.launcher == "wofi") wm.launchercmd; };
+      })
+      (m.module { name = "hyprland"; options = en; os = { wm, ... }: { out.bind = wm.launchercmd; }; })
+    ];
+  }).out == { wofi = "wofi show drun"; bind = "wofi show drun"; }
+'
+
+expect_success "self-feed: enable reading the sent configName resolves via the static view" "$PRE"'
+  (run {
+    configNames.wm = { type = T.attrs; merge = "single"; default = { launcher = "rofi"; }; };
+    modules = [
+      (m.module {
+        name = "wofi";
+        options = { wm, ... }: { enable = lib.mkOption { type = T.bool; default = wm.launcher == "wofi"; }; };
+        send.wm.launchercmd = "wofi show drun";
+        os = { wm, ... }: { out.on = lib.mkIf (wm.launcher == "wofi") true; };
+      })
+    ];
+  }).out == {}
+'
+
+# ---------------------------------------------------------------------------
+# Phase 2: derived contributions.  A function leaf nested under an explicit
+# path (`send.<configName>.<path...> = fn`) is applied with the resolved
+# graph MINUS the module's own contributions (the exclusion view), so it can
+# read the configName it writes to.
+# ---------------------------------------------------------------------------
+
+expect_success "derived send: function leaf reads the configName it writes to" "$PRE"'
+  (run {
+    configNames.wm = { type = T.attrs; merge = "single"; default = {}; };
+    modules = [
+      (m.module { name = "wm"; options = en; send.wm = { name = "hyprland"; launcher = "wofi"; }; })
+      (m.module {
+        name = "wofi";
+        options = { wm, ... }: { enable = lib.mkOption { type = T.bool; default = wm.launcher == "wofi"; }; };
+        send.wm.launchercmd = { wm, ... }: "${wm.launcher} show drun";
+      })
+      (m.module { name = "hyprland"; options = en; os = { wm, ... }: { out.bind = wm.launchercmd; out.name = wm.name; }; })
+    ];
+  }).out == { bind = "wofi show drun"; name = "hyprland"; }
+'
+
+# The leaf reads `c.mine`, a path the module itself writes.  With a correct
+# exclusion view that resolves to the registry default; if the exclusion ever
+# broke (the leaf seeing its own contribution) the value would change or the
+# read would diverge, so this assertion is a real tripwire.  `base` appears in
+# the result because the registry default is the BASE of the final attrset
+# value (path-wise fold, see lib/config-graph/merge.nix).
+expect_success "derived send: exclusion view does not contain the module's own contribution" "$PRE"'
+  (run {
+    configNames.c = { type = T.attrs; merge = "single"; default = { base = "from-default"; mine = "from-default"; }; };
+    modules = [
+      (m.module { name = "d"; options = en; send.c = { mine = { c, ... }: c.base + "/" + c.mine; other = "x"; }; })
+      (m.module { name = "r"; options = en; os = { c, ... }: { out.r = c; }; })
+    ];
+  }).out.r == { base = "from-default"; mine = "from-default/from-default"; other = "x"; }
+'
+
+expect_failure "derived send: mutually reading derived contributions are caught by the dependency graph" "$PRE"'
+  (run {
+    configNames.c = { type = T.attrs; merge = "single"; default = {}; };
+    modules = [
+      (m.module { name = "a"; options = en; send.c.x = { c, ... }: c.y; })
+      (m.module { name = "b"; options = en; send.c.y = { c, ... }: c.x; })
+      (m.module { name = "r"; options = en; os = { c, ... }: { out.r = c.x; }; })
+    ];
+  }).out.r
+' "dependency cycle detected"
+
+# The derived leaf-function arguments are registered as receiver args, so
+# each module is a receiver AND a sender of `c`: the static graph already
+# contains a -> b -> a.  This is an improvement over surfacing the mutual
+# read as a Nix infinite recursion at evaluation time: the error names the
+# modules before any value is evaluated.
+
+expect_failure "whole-function send + receive of the same configName is still a cycle" "$PRE"'
+  (run {
+    configNames.c = { type = T.attrs; merge = "single"; default = {}; };
+    modules = [
+      (m.module { name = "s"; options = en; send.c = { c, ... }: { v = 1; }; os = { c, ... }: { out.s = c.v; }; })
+    ];
+  }).out.s
+' "depends on itself"
+
+expect_failure "derived send: unknown leaf-function argument is rejected" "$PRE"'
+  (run {
+    configNames.c = { type = T.attrs; merge = "single"; default = {}; };
+    modules = [
+      (m.module { name = "d"; options = en; send.c.p = { definitelyNotAConfigName, ... }: 1; })
+    ];
+  }).out
+' "unknown configName in receiver arguments"
+
 expect_success "target-time: mkBefore / mkAfter / mkOrder" "$PRE"'
   (run {
     configNames.l = reg "ordered" (T.listOf T.int);

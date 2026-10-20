@@ -443,7 +443,15 @@
         receiverArgs =
           lib.unique
           ((lib.concatMap normalizeLib.functionArgsOf (builtins.attrValues normalSend))
-            ++ (lib.concatMap normalizeLib.functionArgsOf (builtins.attrValues forceSend)));
+            ++ (lib.concatMap normalizeLib.functionArgsOf (builtins.attrValues forceSend))
+            # derived contributions: argument names of function leaves nested
+            # inside host send values (same rule as normalizeModule)
+            ++ (lib.concatMap
+              (normalizeLib.leafArgsOf "host send value")
+              (builtins.attrValues normalSend))
+            ++ (lib.concatMap
+              (normalizeLib.leafArgsOf "host send.force value")
+              (builtins.attrValues forceSend)));
         hasSend = builtins.attrNames normalSend != [] || builtins.attrNames forceSend != [];
       in {
         name = "host:${selectedHostName}:${toString fragmentIndex}";
@@ -566,6 +574,24 @@
       config,
       contribution,
       graph,
+      configName,
+      /*
+      Derived contributions (function leaves inside a send value,
+      `send.<configName>.<path...> = fn`) are applied with
+      `baseArgs // leafExtra`, where `leafExtra` is the contributing
+      module's EXCLUSION VIEW: the resolved graph without that module's own
+      contributions.  Reading the configName from a derived contribution
+      therefore never depends on the module's own value.
+
+      leafExtra == null: the static collection-time view.  Function sends
+      (whole-contribution functions and derived function leaves) are kept
+      UNEVALUATED there: they need `opt` and the enable-filtered view,
+      none of which exist during collection.  Replacing them with a
+      diagnostic throw is NOT viable: the merge machinery (conflict
+      analysis, property discharge) forces leaf WHNF, which would fire the
+      diagnostic even when nobody reads the path.
+      */
+      leafExtra ? null,
     }: let
       # Module send functions receive their module option state as `opt`.
       # Host send functions have no module option state, so `opt` is absent.
@@ -583,9 +609,17 @@
         )
         // graph;
     in
-      if lib.isFunction contribution.value
+      if leafExtra == null
+      # static collection-time view: keep function sends unevaluated
+      then contribution.value
+      else if lib.isFunction contribution.value
       then contribution.value baseArgs
-      else contribution.value;
+      else
+        configGraphLib.mapSendLeafFunctions {
+          ctx = "configName '${configName}' (module '${contribution.module}')";
+          value = contribution.value;
+          applyFn = _path: fn: fn (baseArgs // leafExtra);
+        };
 
     # `send` carries ordinary Nix module-definition properties as well as
     # values.  Discharge/filter/sort them *across the complete contribution
@@ -617,12 +651,22 @@
       config,
       contributions,
       graph,
+      configName,
+      # per-contribution extra arguments for derived (function-leaf) sends:
+      # contribution -> the module's exclusion view (see evalSendValue)
+      leafExtraFor ? null,
     }: let
       defs =
         map
         (contribution: {
           file = contribution.source or "<mulix ${contribution.module}>";
-          value = evalSendValue {inherit config contribution graph;};
+          value = evalSendValue {
+            inherit config contribution graph configName;
+            leafExtra =
+              if leafExtraFor == null
+              then null
+              else leafExtraFor contribution;
+          };
           inherit contribution;
         })
         contributions;
@@ -644,7 +688,29 @@
     in
       map (def: def.contribution // {value = def.value;}) sorted;
 
-    configGraphForConfig = config: let
+    /*
+    mkConfigGraph resolves the full configName graph for one host config.
+
+    excludeModule (optional): name of a module whose contributions are
+    removed from every configName.  This is the "exclusion view" a derived
+    contribution reads: a function leaf under send.<configName>.<path...>
+    is applied with the resolved graph minus its own module's contributions,
+    so it can read the very configName it writes to without depending on
+    its own value.
+
+    Exclusion views are built lazily, per module, and are only forced when a
+    module actually declares a derived (function-leaf) contribution.
+    Configurations without derived sends never force them.  A module's own
+    exclusion view also never forces the module's own `enable` (its
+    contributions are filtered out before the enable gate), which keeps
+    `enable = wmconfig.launcher == "wofi"` acyclic even when the module
+    derived-sends into wmconfig.
+    */
+    mkConfigGraph = config: excludeModule: let
+      exclusions =
+        lib.genAttrs
+        (map (m: m.name) sendGraphModules)
+        (m: mkConfigGraph config m);
       graph = configGraphLib.resolveAll {
         # Re-validate the user registry here rather than the normalized registry:
         # bind = "mulix.modules" owns its injected type/default, so feeding the
@@ -655,19 +721,23 @@
         baseValues = lib.genAttrs boundConfigNames (_: config.mulix.modules);
         contributionsFor = configName:
           applySendProperties {
-            inherit config graph;
+            inherit config configName graph;
+            leafExtraFor = contribution: exclusions.${contribution.module};
             contributions =
               builtins.filter
               (c:
-                (c.always or false)
-                || (c.origin or "module") == "host"
-                || config.mulix.modules.${c.module}.enable)
+                c.module != excludeModule
+                && ((c.always or false)
+                    || (c.origin or "module") == "host"
+                    || config.mulix.modules.${c.module}.enable))
               (sendContributionsFor configName);
           };
         inherit force;
       };
     in
       graph;
+
+    configGraphForConfig = config: mkConfigGraph config null;
 
     sendContributionsFor = configName:
       lib.concatMap
@@ -718,8 +788,11 @@
     # fragments and receivers observe the enable-filtered graph instead
     # (disabled modules' non-`always` sends are excluded there).  Read
     # `configGraph` as "all potential contributions", never as "effective
-    # values".  Function-valued sends (which need `opt`) are not available in
-    # this view at all; they are evaluated at target time.
+    # values".  Function-valued sends (whole-contribution functions and
+    # derived function leaves, which need `opt`) appear here UNEVALUATED
+    # (raw functions); they are applied at target time.  Reading such a
+    # path as data during collection therefore fails with a Nix type error
+    # ("cannot coerce a function to a string", ...) pointing at the reader.
     #
     # Collection-time arguments for ordinary configNames use the static graph.
     # A configName bound to `config.mulix.modules` deliberately throws when forced
@@ -730,22 +803,8 @@
         applySendProperties {
           config = null;
           graph = configGraphThunk;
-          contributions =
-            map
-            (c:
-              c
-              // {
-                value =
-                  if lib.isFunction c.value
-                  then
-                    throw ''
-                      mulix: send.${configName} is function-valued and therefore cannot
-                      be consumed during module collection. Consume this configName from
-                      a target fragment or another send transformation instead.
-                    ''
-                  else c.value;
-              })
-            (sendContributionsFor configName);
+          inherit configName;
+          contributions = sendContributionsFor configName;
         };
       inherit force;
     };

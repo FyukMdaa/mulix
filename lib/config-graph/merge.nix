@@ -283,6 +283,15 @@
         if isAttrs boundBase && isAttrs sentValue
         then lib.recursiveUpdate boundBase sentValue
         else sentValue
+      # The registry default is the BASE for attrset merges: contributions
+      # update it path-wise instead of replacing it.  Without this fold, a
+      # module reading `wmconfig.launcher` (provided only by the default)
+      # while another module adds `wmconfig.launchercmd` would see
+      # `attribute 'launcher' missing`.  Non-attrset pairs keep the
+      # module-system semantics: the contribution replaces the default.
+      else if contributions != [] && entry ? default
+           && isAttrs entry.default && isAttrs sentValue
+      then lib.recursiveUpdate entry.default sentValue
       else sentValue;
   in let
     # force 適用 (force は最終値を override する)。

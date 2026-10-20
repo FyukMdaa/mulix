@@ -35,6 +35,10 @@ in {
     collectPathsIn
     pathKey
     recursiveUpdateMany
+    sendStaticPaths
+    sendLeafFunctionArgs
+    mapSendLeafFunctions
+    formatPath
     ;
 
   # ---- merge strategies + resolution ----

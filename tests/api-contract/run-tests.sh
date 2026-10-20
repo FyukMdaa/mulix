@@ -490,20 +490,35 @@ expect_success "ordered strategy does not walk into (self-referential) elements"
 # dependency errors
 # ---------------------------------------------------------------------------
 
-expect_failure "a module that sends and receives the same configName is rejected" "$PRE"'
+expect_failure "a module that function-sends and receives the same configName is rejected" "$PRE"'
   (build {
+    configNames.foo = reg "ordered" (T.listOf T.int);
+    modules = [
+      ({ foo, mulib, ... }: mulib.module { name = "self"; send.foo = { foo, ... }: [ 1 ]; })
+    ];
+  }).dependencyGraph
+' "depends on itself"
+
+# Since path-granular cycle detection, a STATIC send to a configName the
+# module also receives is allowed: the static contribution does not read the
+# resolved value, so self-feeding cannot recurse.  Only sends with statically
+# unknown write paths (whole-contribution functions, property-wrapped values)
+# are rejected.
+expect_success "a module that statically sends and receives the same configName is allowed" "$PRE"'
+  let g = (build {
     configNames.foo = reg "ordered" (T.listOf T.int);
     modules = [
       ({ foo, mulib, ... }: mulib.module { name = "self"; send.foo = [ 1 ]; })
     ];
-  }).dependencyGraph
-' "depends on itself"
+  }).dependencyGraph;
+  in g.edges == []
+'
 
 expect_failure "self-dependency error names module and configName" "$PRE"'
   (build {
     configNames.foo = reg "ordered" (T.listOf T.int);
     modules = [
-      ({ foo, mulib, ... }: mulib.module { name = "self"; send.foo = [ 1 ]; })
+      ({ foo, mulib, ... }: mulib.module { name = "self"; send.foo = { foo, ... }: [ 1 ]; })
     ];
   }).dependencyGraph
 ' "self --foo--> self"

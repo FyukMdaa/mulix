@@ -43,6 +43,27 @@ mulib.module {
 
 =always= は =os=、=home=、=darwin=、=send= を持てます。
 
+** sendと依存グラフ
+
+- 同一moduleが同一configNameに =send= し、かつそのconfigNameを =options= / fragment引数で受信すること（自己フィード）は、send値がplain dataまたはリーフ関数（下記）のとき許可されます。静的なcontributionは解決済み値を読まないため再帰しません。
+- send値がcontribution全体を関数にする形式（=send.c = { c, ... }: ...;=）で受信も行う場合は、書き込みpathが静的に未知のため循環として拒否されます（=depends on itself=）。
+
+#+begin_src nix
+# derived contribution: リーフ関数は「自分のcontributionを除いた解決値」を引数に取る
+mulib.module {
+  name = "wofi";
+  options = { wmconfig, ... }: {
+    enable = lib.mkOption { type = lib.types.bool; default = wmconfig.launcher == "wofi"; };
+  };
+  send.wmconfig.launchercmd = { wmconfig, ... }: "${wmconfig.launcher} show drun";
+}
+#+end_src
+
+- =send.<configName>.<path...> = fn= の関数リーフは書き込みpathをネストキーで宣言する「derived contribution」です。引数に渡されるconfigNameは自分のcontributionを除いたviewなので、自分が書くpathを読んでも循環しません。
+- derived contributionはtarget評価時に解決されます。module collection時の静的グラフ（=configGraph=）では、関数send（全体関数・リーフ関数とも）は生の関数として現れます。そのpathをcollection時にデータとして読むと、Nixの型エラー（=cannot coerce a function to a string= など）が発生し、トレースは読み手を指します。
+- registryのdefault（attrset型の場合）は、contributionが存在するときもマージのベースとして使われます（contributionがdefaultをpath単位で上書き）。したがって =enable = wmconfig.launcher == "wofi"= のように、default由来のpathをmodule collection時に読めます。
+- 異なるmodule間で互いのderived contributionを読み合う構成は、依存グラフの循環検知で検出されます（=dependency cycle detected=）。リーフ関数の引数がreceiver引数として登録されるため、静的な段階でモジュール名付きのエラーになります。
+
 * =mulib.host=
 
 #+begin_src nix

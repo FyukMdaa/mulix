@@ -199,6 +199,114 @@
     else " [source: ${w.source}]"
   }";
 
+  # ---- static send analysis & derived contributions ----
+  #
+  # Three traversals over send values, sharing the traversal policy above:
+  # plain attrsets are walked, opaque values are leaves, property wrappers
+  # (mkIf / mkMerge / mkOverride / mkOrder) are not interpreted as data, and
+  # the walk depth is capped so a self-referential value reports a mulix
+  # error instead of overflowing the stack.  None of them forces leaf VALUES
+  # beyond WHNF -- only the attrset structure.
+
+  /*
+  sendStaticPaths: leaf paths a send value writes, or `null` when the write
+  set cannot be determined statically.
+
+  A nested FUNCTION leaf is a *derived contribution*: its write path is
+  declared by the nesting keys (`send.<configName>.<path...> = fn`), so it
+  counts as a known path.  A property wrapper anywhere in the value makes
+  the whole result `null` (conservative: callers must assume unknown writes).
+  */
+  sendStaticPaths = ctx: prefix: value: let
+    propertyType =
+      if builtins.isAttrs value
+      then value._type or null
+      else null;
+  in
+    if lib.isFunction value
+    then [prefix]
+    else if builtins.isAttrs value
+    then
+      if isOpaqueValue value
+      then [prefix]
+      else if propertyType != null
+      then null
+      else let
+        sub =
+          builtins.seq (checkSendDepth ctx prefix)
+          (map (k: sendStaticPaths ctx (prefix ++ [k]) value.${k})
+            (builtins.attrNames value));
+      in
+        if builtins.any (s: s == null) sub
+        then null
+        else lib.concatLists sub
+    else [prefix];
+
+  /*
+  sendLeafFunctionArgs: union of the argument names of every function leaf
+  nested inside a send value (the declared arguments of derived
+  contributions).  Property wrappers and opaque values are not entered, so
+  functions hidden behind mkIf are not discovered here.
+  */
+  sendLeafFunctionArgs = ctx: value: let
+    go = prefix: value: let
+      propertyType =
+        if builtins.isAttrs value
+        then value._type or null
+        else null;
+    in
+      if lib.isFunction value
+      then builtins.attrNames (lib.functionArgs value)
+      else if builtins.isAttrs value
+      then
+        if isOpaqueValue value || propertyType != null
+        then []
+        else
+          builtins.seq (checkSendDepth ctx prefix)
+          (lib.concatLists
+            (lib.mapAttrsToList
+              (k: v: go (prefix ++ [k]) v)
+              value))
+      else [];
+  in go [] value;
+
+  /*
+  mapSendLeafFunctions: rewrite a send value by applying every function leaf
+  (derived contribution) via `applyFn path fn`.
+
+  Property wrappers are preserved but their contents are traversed, so
+  `send.c.p = lib.mkIf cond ({c, ...}: ...)` still applies the function.
+  Opaque values (derivations, functors, typed attrsets) and non-attrset
+  leaves pass through untouched.
+  */
+  mapSendLeafFunctions = {
+    ctx,
+    value,
+    applyFn,
+  }: let
+    go = prefix: value: let
+      propertyType =
+        if builtins.isAttrs value
+        then value._type or null
+        else null;
+    in
+      if lib.isFunction value
+      then applyFn prefix value
+      else if builtins.isAttrs value
+      then
+        if isOpaqueValue value
+        then value
+        else if propertyType == "if" || propertyType == "override" || propertyType == "order"
+        then value // {content = go prefix value.content;}
+        else if propertyType == "merge"
+        then value // {contents = map (go prefix) value.contents;}
+        else
+          builtins.seq (checkSendDepth ctx prefix)
+          (builtins.mapAttrs (k: v: go (prefix ++ [k]) v) value)
+      else value;
+  in
+    go [] value;
+
   # `mkOverride` normally appears at the definition boundary, where
   # lib.modules.filterOverrides can process it.  send values can also contain
   # an override at an arbitrary leaf, e.g. `{ value = lib.mkForce 2; }`.
@@ -350,5 +458,8 @@ in rec {
     defaultOverridePriority
     collectLeafWrites
     applyNestedLeafOverrides
+    sendStaticPaths
+    sendLeafFunctionArgs
+    mapSendLeafFunctions
     ;
 }

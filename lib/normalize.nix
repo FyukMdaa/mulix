@@ -1,5 +1,7 @@
 {lib}: let
   errors = import ./errors.nix {inherit lib;};
+  overlap = import ./config-graph/overlap.nix {inherit lib;};
+  inherit (overlap) sendLeafFunctionArgs;
   allowedTargets = ["os" "home" "darwin"];
   allowedTopLevel = ["name" "options" "always" "os" "home" "darwin" "send"];
   allowedAlwaysTargets = ["os" "home" "darwin" "send"];
@@ -115,6 +117,27 @@ in rec {
     else [];
 
   isFunctionModule = def: lib.isFunction def;
+
+  # re-exported for mk-mulix.nix (host send modules do not go through
+  # normalizeModule but must register derived-leaf arguments the same way)
+  inherit (overlap) sendLeafFunctionArgs;
+
+  /*
+  Derived-leaf arguments of one send value, best-effort.
+
+  Traversing a send value forces its structure, and a leaf may reference the
+  module's own configName arguments (or anything else that throws / recurses
+  when forced this early).  Such a value cannot be traversed, so it
+  contributes no leaf arguments here; the unknown-argument check is a
+  best-effort static service, and any real error still surfaces when the
+  value is evaluated.
+  */
+  leafArgsOf = ctx: v: let
+    res = builtins.tryEval (sendLeafFunctionArgs ctx v);
+  in
+    if res.success
+    then res.value
+    else [];
 
   /*
   normalizeModule:
@@ -256,7 +279,15 @@ in rec {
     sendDeclaredArgs =
       (lib.concatMap functionArgsOf (builtins.attrValues sendChecked))
       ++ (lib.concatMap functionArgsOf (builtins.attrValues sendForceRaw))
-      ++ (lib.concatMap functionArgsOf (builtins.attrValues alwaysChecked.send));
+      ++ (lib.concatMap functionArgsOf (builtins.attrValues alwaysChecked.send))
+      # derived contributions: argument names of function leaves nested
+      # inside send values (send.<configName>.<path...> = fn).  Declaring
+      # them as receiver args (a) validates them against the registry and
+      # (b) registers the module as a reader of the configName in the
+      # dependency graph.
+      ++ (lib.concatMap (leafArgsOf "send value") (builtins.attrValues sendChecked))
+      ++ (lib.concatMap (leafArgsOf "send.force value") (builtins.attrValues sendForceRaw))
+      ++ (lib.concatMap (leafArgsOf "always.send value") (builtins.attrValues alwaysChecked.send));
     receiverArgs =
       lib.unique
       (declaredArgs ++ optionsDeclaredArgs ++ fragmentDeclaredArgs ++ sendDeclaredArgs);
