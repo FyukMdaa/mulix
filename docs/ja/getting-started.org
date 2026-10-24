@@ -241,11 +241,11 @@ mulib.host {
 
 * 8. Home Manager
 
-統合を使う場合は =homeManager= を有効にします。
+統合を使う場合は =homeManager.embed= を有効にします。
 
 #+begin_src nix
 homeManager = {
-  enable = true;
+  embed = true;
   user = "your_username";
   useGlobalPkgs = true;
 };
@@ -253,7 +253,9 @@ homeManager = {
 
 そのhostの =home= fragmentが、指定したuserのHome Manager moduleとして評価されます。
 
-standalone Home Manager configurationも同時に公開されます。=home-manager= inputが存在すれば =homeConfigurations= が生成され、=homeManager.enable= の有無とは独立しています。
+standalone Home Manager configurationも同時に公開されます。=home-manager= inputが存在すれば =homeConfigurations= が生成され、=homeManager.embed= の有無とは独立しています。
+
+旧 =homeManager.enable= はv5で =embed= に改名されました。旧名を書くと、書き換えを促すエラーになります。
 
 * 9. overlay
 

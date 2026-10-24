@@ -83,13 +83,13 @@ mulib.module {
 
 #+begin_src nix
 homeManager = {
-  enable = true;
+  embed = true;
   user = "alice";
   useGlobalPkgs = true;
 };
 #+end_src
 
-統合モードではHome ManagerのNixOS / nix-darwin moduleをmulixが追加し、各hostの =home= targetをそのuserのHome Manager modulesとして渡します。
+統合モードではHome ManagerのNixOS / nix-darwin moduleをmulixが追加し、各hostの =home= targetをそのuserのHome Manager modulesとして渡します。（旧 =homeManager.enable= はv5で =embed= に改名されました。）
 
 * 最小構成
 

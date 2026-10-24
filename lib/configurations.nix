@@ -35,15 +35,20 @@
     extraNixosModules ? [],
     extraDarwinModules ? [],
     extraHomeModules ? [],
-    # Home Manager を NixOS / nix-darwin の OS build に統合する。
+    # Home Manager を NixOS / nix-darwin の OS build に埋め込む (embed)。
     # `true` だけでも有効化でき、その場合は `homeManagerUser` を利用する。
     # Attrset なら `user` / `useGlobalPkgs` を指定できる。
     #
     #   homeManager = {
-    #     enable = true;
+    #     embed = true;
     #     user = "alice";
     #     useGlobalPkgs = true;
     #   };
+    #
+    # 旧 `homeManager.enable` は v5 で `embed` に改名・削除された
+    # (「enable」は「HMを使う」「OSに埋め込む」のどちらにも読めて曖昧だった。
+    #  実体は nixosModules.home-manager を OS build に import することなので、
+    #  それを直接言う embed に変更)。旧名は直ちにエラーになる。
     homeManager ? false,
     # standalone home-manager 用のユーザ名。`homeManager.user` が指定されていれば
     # そちらを優先する。
@@ -57,7 +62,7 @@
   }: let
     homeManagerConfig =
       if builtins.isBool homeManager
-      then {enable = homeManager;}
+      then {embed = homeManager;}
       else if builtins.isAttrs homeManager
       then homeManager
       else
@@ -66,35 +71,52 @@
           expected a bool or attrset, got: ${builtins.typeOf homeManager}
           (configurations input)
         '';
-    homeManagerEnabled = homeManagerConfig.enable or false;
+    # 旧キー `enable` は削除済み。静かなフォールバックは「embed を指定した
+    # のに無効になる」という紛らわしい挙動を生むので、即座にエラーで
+    # 書き換えを促す。
+    _homeManagerLegacyKeyCheck =
+      if homeManagerConfig ? enable
+      then
+        throw ''
+          mulix: homeManager.enable was renamed to homeManager.embed
+          `enable` was ambiguous ("use home-manager"? "embed it into the OS
+          build"?); `embed` states what it does: import the home-manager
+          module into the NixOS / nix-darwin build.
+          fix: homeManager.enable = true;  ->  homeManager.embed = true;
+          (`homeManager = true;` keeps working as the shorthand.)
+        ''
+      else true;
+    homeManagerEmbedded = homeManagerConfig.embed or false;
     homeManagerUseGlobalPkgs = homeManagerConfig.useGlobalPkgs or true;
     effectiveHomeManagerUser =
       if (homeManagerConfig.user or null) != null
       then homeManagerConfig.user
       else homeManagerUser;
     _homeManagerShapeCheck =
-      if !(builtins.isBool homeManagerEnabled)
-      then
-        throw ''
-          mulix: invalid homeManager.enable input
-          expected a boolean, got: ${builtins.typeOf homeManagerEnabled}
-          (configurations input)
-        ''
-      else if !(builtins.isBool homeManagerUseGlobalPkgs)
-      then
-        throw ''
-          mulix: invalid homeManager.useGlobalPkgs input
-          expected a boolean, got: ${builtins.typeOf homeManagerUseGlobalPkgs}
-          (configurations input)
-        ''
-      else if effectiveHomeManagerUser != null && !(builtins.isString effectiveHomeManagerUser)
-      then
-        throw ''
-          mulix: invalid Home Manager user
-          expected a string or null, got: ${builtins.typeOf effectiveHomeManagerUser}
-          (configurations input)
-        ''
-      else true;
+      builtins.seq _homeManagerLegacyKeyCheck
+      (
+        if !(builtins.isBool homeManagerEmbedded)
+        then
+          throw ''
+            mulix: invalid homeManager.embed input
+            expected a boolean, got: ${builtins.typeOf homeManagerEmbedded}
+            (configurations input)
+          ''
+        else if !(builtins.isBool homeManagerUseGlobalPkgs)
+        then
+          throw ''
+            mulix: invalid homeManager.useGlobalPkgs input
+            expected a boolean, got: ${builtins.typeOf homeManagerUseGlobalPkgs}
+            (configurations input)
+          ''
+        else if effectiveHomeManagerUser != null && !(builtins.isString effectiveHomeManagerUser)
+        then
+          throw ''
+            mulix: invalid Home Manager user
+            expected a string or null, got: ${builtins.typeOf effectiveHomeManagerUser}
+            (configurations input)
+          ''
+        else true);
     # ---- fleet discovery ------------------------------------------------
     # `configurations` は全 host を一度にビルドする必要があるが、`mkMulix` は
     # `host` (単一) を必須とする。そこで、paths と hostDefs から host 名を
@@ -226,7 +248,7 @@
       else throw "mulix: configurations needs `darwinSystem` or `inputs.nix-darwin` to build nix-darwin configurations";
 
     # Standalone Home Manager wrapper.  This is independent from the
-    # `homeManager.enable` integration switch: a caller may still expose
+    # `homeManager.embed` integration switch: a caller may still expose
     # `homeConfigurations` without integrating Home Manager into the OS build.
     homeManagerConfigurationFn =
       if homeManagerConfiguration != null
@@ -236,18 +258,18 @@
       else null;
 
     homeManagerNixosModuleFor = r:
-      if !homeManagerEnabled
+      if !homeManagerEmbedded
       then []
       else if effectiveHomeManagerUser == null
       then
         throw ''
-          mulix: homeManager integration is enabled for NixOS, but no user was specified.
+          mulix: homeManager.embed is enabled for NixOS, but no user was specified.
           Set `homeManager.user` (or the legacy `homeManagerUser`) in `configurations`.
         ''
       else if !(inputs ? home-manager)
       then
         throw ''
-          mulix: homeManager integration is enabled, but `inputs.home-manager` is missing.
+          mulix: homeManager.embed is enabled, but `inputs.home-manager` is missing.
         ''
       else if !(inputs.home-manager ? nixosModules) || !(inputs.home-manager.nixosModules ? home-manager)
       then
@@ -265,18 +287,18 @@
       ];
 
     homeManagerDarwinModuleFor = r:
-      if !homeManagerEnabled
+      if !homeManagerEmbedded
       then []
       else if effectiveHomeManagerUser == null
       then
         throw ''
-          mulix: homeManager integration is enabled for nix-darwin, but no user was specified.
+          mulix: homeManager.embed is enabled for nix-darwin, but no user was specified.
           Set `homeManager.user` (or the legacy `homeManagerUser`) in `configurations`.
         ''
       else if !(inputs ? home-manager)
       then
         throw ''
-          mulix: homeManager integration is enabled, but `inputs.home-manager` is missing.
+          mulix: homeManager.embed is enabled, but `inputs.home-manager` is missing.
         ''
       else if !(inputs.home-manager ? darwinModules) || !(inputs.home-manager.darwinModules ? home-manager)
       then

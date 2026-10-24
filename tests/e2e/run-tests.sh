@@ -233,6 +233,41 @@ expect_failure "whole-function send + receive of the same configName is still a 
   }).out.s
 ' "depends on itself"
 
+# ---------------------------------------------------------------------------
+# Phase 3: the cycle error lists the write paths of each hop in a detail
+# block below the hops line.  Known writes show the leaf paths; unknown
+# writes show WHY they are unknown (whole-contribution function, property
+# wrapper, or not analysable at declaration time).
+# ---------------------------------------------------------------------------
+
+expect_failure "cycle error lists the write paths of each hop" "$PRE"'
+  (run {
+    configNames.c = { type = T.attrs; merge = "single"; default = {}; };
+    modules = [
+      (m.module { name = "a"; options = en; send.c = { x = 1; }; os = { c, ... }: { out.a = c.y; }; })
+      (m.module { name = "b"; options = en; send.c = { y = 2; }; os = { c, ... }: { out.b = c.x; }; })
+    ];
+  }).out
+' "writes [.x]"
+
+expect_failure "cycle error names why write paths are unknown (whole-contribution function)" "$PRE"'
+  (run {
+    configNames.c = { type = T.attrs; merge = "single"; default = {}; };
+    modules = [
+      (m.module { name = "s"; options = en; send.c = { c, ... }: { v = 1; }; os = { c, ... }: { out.s = c.v; }; })
+    ];
+  }).out
+' "whole-contribution function"
+
+expect_failure "cycle error names why write paths are unknown (property wrapper)" "$PRE"'
+  (run {
+    configNames.c = { type = T.attrs; merge = "single"; default = {}; };
+    modules = [
+      (m.module { name = "w"; options = en; send.c = lib.mkIf true { v = 1; }; os = { c, ... }: { out.w = c.v; }; })
+    ];
+  }).out
+' "property wrapper"
+
 expect_failure "derived send: unknown leaf-function argument is rejected" "$PRE"'
   (run {
     configNames.c = { type = T.attrs; merge = "single"; default = {}; };

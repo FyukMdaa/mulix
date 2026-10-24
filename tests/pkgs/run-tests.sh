@@ -174,7 +174,7 @@ HM_INTEGRATION='
       conditionNames = { };
       configNames.pkgNames = { type = T.listOf T.str; merge = "ordered"; default = [ ]; };
       nixosSystem = fakeNixosSystem;
-      homeManager = { enable = true; user = "alice"; };
+      homeManager = { embed = true; user = "alice"; };
     };
     mods = cfgsHM.nixosConfigurations.h.modules;
     hm = lib.findFirst (m: lib.isAttrs m && builtins.hasAttr "home-manager" m) null mods;

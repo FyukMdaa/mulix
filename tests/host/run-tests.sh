@@ -481,7 +481,10 @@ expect_success "15. bound configNames use the ordinary dependency graph" "$PRE"'
       ({ mulib, ... }: mulib.module { name = "sender"; send.hostconf = { x = 1; }; })
     ];
   };
-  in builtins.elem { from = "sender"; to = "receiver"; via = "hostconf"; } r.dependencyGraph.edges
+  # Phase 3 以降、edge は writePaths / writeReason を持つため全体一致の
+  # builtins.elem は使えない。from/to/via の関係存在を述語で確認する。
+  in builtins.any (e: e.from == "sender" && e.to == "receiver" && e.via == "hostconf")
+       r.dependencyGraph.edges
 '
 
 expect_failure "15b. cycles through bound configNames are detected by the normal dependency graph" "$PRE"'

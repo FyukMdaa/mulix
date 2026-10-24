@@ -31,7 +31,7 @@
       specialArgs = {inherit inputs;};
 
       homeManager = {
-        enable = true;
+        embed = true;
         user = "your_username";
         useGlobalPkgs = true;
       };

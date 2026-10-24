@@ -63,6 +63,27 @@ mulib.module {
 - derived contributionはtarget評価時に解決されます。module collection時の静的グラフ（=configGraph=）では、関数send（全体関数・リーフ関数とも）は生の関数として現れます。そのpathをcollection時にデータとして読むと、Nixの型エラー（=cannot coerce a function to a string= など）が発生し、トレースは読み手を指します。
 - registryのdefault（attrset型の場合）は、contributionが存在するときもマージのベースとして使われます（contributionがdefaultをpath単位で上書き）。したがって =enable = wmconfig.launcher == "wofi"= のように、default由来のpathをmodule collection時に読めます。
 - 異なるmodule間で互いのderived contributionを読み合う構成は、依存グラフの循環検知で検出されます（=dependency cycle detected=）。リーフ関数の引数がreceiver引数として登録されるため、静的な段階でモジュール名付きのエラーになります。
+- 循環エラーはhops行の下に、各エッジの**書き込みpath**を詳細ブロックで表示します。書き込みpathが静的に既知ならleaf pathの一覧、未知ならその理由（全体関数send / property wrapper / 宣言時評価不能）が表示されます。
+
+#+begin_src nix
+# 例: a が send.c.x を送り c を読み、b が send.c.y を送り c を読む
+# mulix: dependency cycle detected
+# a --c--> b --c--> a
+# write paths along the cycle:
+#   a --c--> b: writes [.x]
+#   b --c--> a: writes [.y]
+# (declared dependency graph cycle detection)
+
+# 書き込みpathが未知の場合（全体関数send + 受信 → 自己循環）:
+# mulix: dependency cycle detected
+# s --c--> s
+# write paths along the cycle:
+#   s --c--> s: writes unknown paths -- the contribution is a
+#   whole-contribution function (send.<configName> = fn): its write paths
+#   are only known once it is applied
+# ... depends on itself: ... help: send plain data, or declare a derived
+# contribution by nesting the function under an explicit path ...
+#+end_src
 
 * =mulib.host=
 
@@ -133,6 +154,7 @@ cfgs = m.configurations {
 ** Home Manager
 
 - =homeManager= :: =false=、=true=、またはattrset。
+- =homeManager.embed= :: Home ManagerをNixOS / nix-darwinのOS buildに埋め込む（=nixosModules.home-manager= をimport）。旧 =homeManager.enable= はv5で =embed= に改名され、旧名はエラーになる。
 - =homeManager.user= :: integrated Home Manager user。
 - =homeManager.useGlobalPkgs= :: 既定値true。
 - =homeManagerUser= :: legacy user setting。=homeManager.user= が優先されます。
