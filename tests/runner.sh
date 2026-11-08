@@ -20,6 +20,7 @@ DEFAULT_SUITES=(
   api-contract
   e2e
   host
+  configurations
   error-ux
   pkgs
   perf

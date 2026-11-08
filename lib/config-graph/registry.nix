@@ -37,7 +37,26 @@
       # mergeDefinitions checks `headError` produced by the type's merge.v2
       # implementation, which is where attrsOf/listOf report nested failures.
       # Force the result because registry validation is intentionally eager.
-      builtins.deepSeq merged true;
+      # Plain data is forced completely, but derivations and functors are only
+      # forced to WHNF: `builtins.deepSeq` would walk a package's entire
+      # closure of attributes (stdenv, bootstrap tools, passthru, ...) and
+      # overflows the stack for e.g. `listOf package` values.
+      forceData 0 merged;
+
+  # Deep-force `v` like `builtins.deepSeq`, but stop at derivations / functors
+  # (already validated by `type.check`) and give up below `maxDepth` levels, so
+  # a self-referential value cannot recurse forever.  Always returns true.
+  forceData = depth: v:
+    if depth > 256
+    then true
+    else if isAttrs v
+    then
+      if v.type or null == "derivation" || v ? __functor
+      then builtins.seq v true
+      else builtins.all (k: forceData (depth + 1) v.${k}) (attrNames v)
+    else if isList v
+    then builtins.all (forceData (depth + 1)) v
+    else builtins.seq v true;
 
   validateRegistryEntry = configName: entry:
     if !isAttrs entry

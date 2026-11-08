@@ -654,4 +654,24 @@ expect_failure "configName binding rejects user-supplied default" "$PRE"'
 ' "bind = \"mulix.modules\" owns the default"
 
 
+# validateType must not deep-walk derivations (`builtins.deepSeq` overflowed the
+# stack on `listOf package` values), while plain data stays eagerly validated.
+expect_success "ordered listOf package accepts a real derivation (no stack overflow)" "$PRE"'
+  let
+    pkgs = import <nixpkgs> {};
+    r = build {
+      configNames.pk = { type = T.listOf T.package; merge = "ordered"; default = []; };
+      modules = [
+        (m.module { name = "s"; send.pk = [ pkgs.hello ]; })
+      ];
+    };
+  in builtins.length r.configGraph.pk == 1
+'
+expect_failure "plain data in a resolved value is still validated deeply" "$PRE"'
+  builtins.deepSeq (build {
+    configNames.foo = { type = T.attrs; merge = "single"; default = { }; };
+    modules = [ (m.module { name = "s"; send.foo = { ok = 1; bad = throw "boom-resolved"; }; }) ];
+  }).configGraph.foo true
+' "boom-resolved"
+
 finish "API CONTRACT TESTS"

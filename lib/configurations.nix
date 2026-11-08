@@ -363,19 +363,29 @@
         )
         rawPerHost)));
 
+    # Key of a host's entry in `homeConfigurations`.
+    #
+    #   user unset            -> "<host>"
+    #   user set, one host    -> "<user>"          (unchanged, backward compatible)
+    #   user set, many hosts  -> "<user>@<host>"   (the `home-manager --flake .#user@host` form)
+    #
+    # Keying every host by the bare user name made all hosts collide on one
+    # key, and `builtins.listToAttrs` silently keeps only the first of them.
+    homeConfigurationKey = hostName:
+      if effectiveHomeManagerUser == null
+      then hostName
+      else if builtins.length (builtins.attrNames rawPerHost) == 1
+      then effectiveHomeManagerUser
+      else "${effectiveHomeManagerUser}@${hostName}";
+
     # Home Manager standalone configurations (全 host)
-    # homeManagerUser が指定された場合はそのユーザ名をキーに、
-    # 省略時は host 名をキーにする
     homeConfigurations =
       if homeManagerConfigurationFn == null
       then {}
       else
         builtins.listToAttrs (lib.mapAttrsToList (
             hostName: r: let
-              key =
-                if effectiveHomeManagerUser != null
-                then effectiveHomeManagerUser
-                else hostName;
+              key = homeConfigurationKey hostName;
             in {
               name = key;
               value = homeManagerConfigurationFn {

@@ -43,6 +43,11 @@ mulib.module {
 
 =always= は =os=、=home=、=darwin=、=send= を持てます。
 
+注意:
+
+- 通常の =os= / =home= / =darwin= fragmentは =config = mkIf opt.enable <fragment>= として包まれます。そのため、これらの中で =imports= / =options= / =disabledModules= のようなmodule system本体のキーは使えません（=The option `imports' does not exist= になります）。それらが必要な場合は、包まれずにそのまま渡される =always.<target>= で書き、必要なら =opt.enable= で =lib.mkIf= してください。
+- =options.enable= の =default= などが読むconfigNameは、collection時の静的ビュー（=configGraph=）です。このビューには、無効化されたmoduleの =send= も含まれます。target fragmentが受け取るconfigNameは、無効なmoduleの（=always= でない）sendを除いた値です。
+
 ** sendと依存グラフ
 
 - 同一moduleが同一configNameに =send= し、かつそのconfigNameを =options= / fragment引数で受信すること（自己フィード）は、send値がplain dataまたはリーフ関数（下記）のとき許可されます。静的なcontributionは解決済み値を読まないため再帰しません。
